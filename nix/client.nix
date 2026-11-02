@@ -39,6 +39,11 @@ in
       default = [ "login" "greetd" "sshd" "su" "sudo" "systemd-user" ];
       description = "PAM services that check screen time before letting a managed user in.";
     };
+    adminGroup = lib.mkOption {
+      type = lib.types.str;
+      default = "wheel";
+      description = ''Members of this group can approve time on the spot with "My parent is here".'';
+    };
     greeter.enable = lib.mkEnableOption "the acceptrequest greetd greeter";
   };
 
@@ -72,6 +77,7 @@ in
       environment = {
         ACCEPTREQUEST_USERS = usersArg;
         ACCEPTREQUEST_GRACE_SECS = toString cfg.graceSeconds;
+        ACCEPTREQUEST_ADMIN_GROUP = cfg.adminGroup;
       } // lib.optionalAttrs (cfg.serverUrl != null) {
         ACCEPTREQUEST_SERVER = cfg.serverUrl;
       } // lib.optionalAttrs (cfg.tokenFile != null) {
@@ -92,6 +98,8 @@ in
       };
     };
 
+    environment.systemPackages = [ cfg.package ];
+
     security.pam.services = lib.genAttrs cfg.pamServices (_: {
       rules.account.acceptrequest = {
         order = 10000;
@@ -99,7 +107,13 @@ in
         modulePath = "${cfg.package}/lib/security/pam_acceptrequest.so";
         args = [ "users=${usersArg}" ];
       };
-    });
+    }) // {
+      # Password check for "My parent is here". The daemon answers the prompts itself, so no fingerprint.
+      acceptrequest = {
+        fprintAuth = false;
+        unixAuth = true;
+      };
+    };
 
     services.greetd = lib.mkIf cfg.greeter.enable {
       enable = true;

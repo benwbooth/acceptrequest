@@ -1,10 +1,11 @@
 mod config;
 mod logind;
+mod parent;
 mod server;
 mod state;
 
 use acceptrequest_common::{
-    Decision, SocketRequest, SocketResponse, TimeRequest, UsageReport, WARNING_THRESHOLDS, evaluate,
+    Decision, SocketRequest, SocketResponse, TimeRequest, UsageReport, WARNING_THRESHOLDS,
 };
 use anyhow::{Context, Result};
 use chrono::Local;
@@ -27,6 +28,10 @@ const SYNC: Duration = Duration::from_secs(60);
 const REQUEST_COOLDOWN: Duration = Duration::from_secs(120);
 /// Upper bound on bytes read from one socket connection.
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+/// Wrong parent passwords allowed within `PARENT_LOCKOUT` before the check is refused.
+const PARENT_MAX_FAILURES: usize = 5;
+const PARENT_LOCKOUT: Duration = Duration::from_secs(10 * 60);
+const PARENT_FAILURE_DELAY: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 struct Tracking {
@@ -46,6 +51,8 @@ struct Daemon {
     logind: Logind,
     api: Option<ServerApi>,
     warnings: broadcast::Sender<(String, u32)>,
+    /// Times of recent wrong "My parent is here" passwords, for the lockout.
+    parent_failures: Mutex<Vec<Instant>>,
 }
 
 #[tokio::main]
@@ -75,6 +82,7 @@ async fn main() -> Result<()> {
         tracking: Mutex::new(HashMap::new()),
         api,
         warnings: broadcast::channel(64).0,
+        parent_failures: Mutex::new(Vec::new()),
         config,
     });
 
@@ -134,7 +142,7 @@ impl Daemon {
                         state.add_minute(user, today);
                     }
                 }
-                evaluate(state.policies.get(user), now, state.used_minutes(user, today))
+                state.decide(user, now).0
             };
             self.enforce(user, &mine, decision).await;
         }
@@ -205,11 +213,15 @@ impl Daemon {
                     Ok(p) => tracing::warn!(user, got = %p.username, "server sent policy for wrong user"),
                     Err(e) => tracing::warn!(user, "policy fetch failed: {e:#}"),
                 }
-                let report = UsageReport {
-                    username: user.clone(),
-                    host: self.config.host.clone(),
-                    day: today,
-                    active_minutes: self.state.lock().await.used_minutes(user, today),
+                let report = {
+                    let state = self.state.lock().await;
+                    UsageReport {
+                        username: user.clone(),
+                        host: self.config.host.clone(),
+                        day: today,
+                        active_minutes: state.used_minutes(user, today),
+                        local_bonus_minutes: state.local_bonus(user, today),
+                    }
                 };
                 if let Err(e) = api.report_usage(&report).await {
                     tracing::warn!(user, "usage report failed: {e:#}");
@@ -289,13 +301,8 @@ impl Daemon {
         if !self.config.is_managed(username) {
             return SocketResponse::Unmanaged;
         }
-        let now = Local::now().naive_local();
-        let state = self.state.lock().await;
-        let used_minutes = state.used_minutes(username, now.date());
-        SocketResponse::Decision {
-            decision: evaluate(state.policies.get(username), now, used_minutes),
-            used_minutes,
-        }
+        let (decision, used_minutes) = self.state.lock().await.decide(username, Local::now().naive_local());
+        SocketResponse::Decision { decision, used_minutes }
     }
 
     async fn answer(&self, request: SocketRequest) -> SocketResponse {
@@ -332,8 +339,60 @@ impl Daemon {
                 self.state.lock().await.pending_requests.push(request);
                 SocketResponse::RequestQueued
             }
+            SocketRequest::ParentGrant { username, minutes, admin, password } => {
+                self.parent_grant(username, minutes, admin, password).await
+            }
             SocketRequest::Subscribe { .. } => unreachable!("handled by the connection loop"),
         }
+    }
+
+    async fn parent_grant(&self, username: String, minutes: u32, admin: String, password: String) -> SocketResponse {
+        let error = |message: &str| SocketResponse::Error { message: message.to_owned() };
+        if !self.config.is_managed(&username) {
+            return SocketResponse::Unmanaged;
+        }
+        if minutes == 0 || minutes > 24 * 60 {
+            return error("Choose between 1 minute and 24 hours.");
+        }
+        {
+            let mut failures = self.parent_failures.lock().await;
+            failures.retain(|at| at.elapsed() < PARENT_LOCKOUT);
+            if failures.len() >= PARENT_MAX_FAILURES {
+                return error("Too many wrong passwords. Try again in a few minutes.");
+            }
+            // Count the attempt up front so parallel guesses can't all slip under the limit.
+            failures.push(Instant::now());
+        }
+
+        // A managed account or one outside the admin group fails exactly like a wrong password.
+        let allowed_admin = !self.config.is_managed(&admin)
+            && admin != "root"
+            && parent::in_group(&admin, &self.config.admin_group);
+        let verified = allowed_admin && {
+            let service = self.config.pam_service.clone();
+            let confdir = self.config.pam_confdir.clone();
+            let admin = admin.clone();
+            tokio::task::spawn_blocking(move || {
+                parent::authenticate(&service, confdir.as_deref(), &admin, &password)
+            })
+            .await
+            .map(|r| r.inspect_err(|e| tracing::warn!("parent check failed: {e}")).is_ok())
+            .unwrap_or(false)
+        };
+        if !verified {
+            tracing::warn!(%admin, user = %username, "refused \"my parent is here\" grant");
+            tokio::time::sleep(PARENT_FAILURE_DELAY).await;
+            return error("That name and password can't approve time.");
+        }
+
+        self.parent_failures.lock().await.clear();
+        let mut state = self.state.lock().await;
+        state.add_local_grant(&username, Local::now().naive_local(), minutes);
+        if let Err(e) = state.save(&self.config.state_dir) {
+            tracing::error!("saving state failed: {e:#}");
+        }
+        tracing::info!(%admin, user = %username, minutes, "parent granted time locally");
+        SocketResponse::Granted { minutes }
     }
 }
 

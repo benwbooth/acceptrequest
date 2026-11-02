@@ -41,3 +41,20 @@ Warnings at 10, 5 and 1 minutes must not steal focus from a fullscreen game.
 - The in-session part runs as a per-user systemd service started by the daemon's policy, not
   as something the child can disable. If the child kills it the warnings stop, but enforcement
   in the root daemon doesn't.
+
+## "My parent is here"
+
+When a parent is physically present they can add time without the phone or the server.
+
+- The greeter, the in-session overlay, or the `acceptrequest parent USER MINUTES` command sends the
+  parent's account name and password to the root daemon over its local socket.
+- The daemon checks that the account is in the admin group (`wheel` by default), is not a managed
+  account and is not root, then verifies the password through the `acceptrequest` PAM service
+  (plain unix password, no fingerprint, because the daemon answers the prompts itself).
+- A grant adds its minutes to today's allowance and also lets the user stay on through downtime
+  for that long. Grants made back to back stack. It works even before the machine has ever
+  reached the server.
+- Guessing is limited: each wrong answer takes 3 seconds, and after 5 wrong answers in 10 minutes
+  the check is refused. Attempts are counted before the password is checked, so firing many guesses
+  at once doesn't get around the limit.
+- Grants are logged with the parent's name and reported to the server with the usage figures.

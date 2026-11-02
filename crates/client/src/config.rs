@@ -12,6 +12,11 @@ pub struct Config {
     /// How long a session stays locked after time runs out before it is terminated.
     pub grace: Duration,
     pub host: String,
+    /// Members of this group can approve time on the spot with "My parent is here".
+    pub admin_group: String,
+    pub pam_service: String,
+    /// Replaces /etc/pam.d for the parent check; only for tests.
+    pub pam_confdir: Option<String>,
 }
 
 impl Config {
@@ -57,6 +62,9 @@ impl Config {
             host: std::fs::read_to_string("/proc/sys/kernel/hostname")
                 .map(|h| h.trim().to_owned())
                 .unwrap_or_else(|_| "unknown".into()),
+            admin_group: var("ACCEPTREQUEST_ADMIN_GROUP").unwrap_or_else(|| "wheel".into()),
+            pam_service: var("ACCEPTREQUEST_PAM_SERVICE").unwrap_or_else(|| "acceptrequest".into()),
+            pam_confdir: var("ACCEPTREQUEST_PAM_CONFDIR"),
         })
     }
 

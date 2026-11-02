@@ -151,6 +151,21 @@ pub fn evaluate(policy: Option<&Policy>, now: NaiveDateTime, used_minutes: u32) 
     Decision::Allowed { remaining_minutes }
 }
 
+/// Apply a parent's on-the-spot grant: until `override_until` the user may be signed in
+/// even when out of time or in downtime.
+pub fn apply_override(decision: Decision, now: NaiveDateTime, override_until: Option<NaiveDateTime>) -> Decision {
+    let Some(until) = override_until.filter(|u| *u > now) else {
+        return decision;
+    };
+    let by_override = (until - now).num_minutes().max(1) as u32;
+    match decision {
+        Decision::Denied { .. } => Decision::Allowed { remaining_minutes: Some(by_override) },
+        Decision::Allowed { remaining_minutes } => Decision::Allowed {
+            remaining_minutes: remaining_minutes.map(|r| r.max(by_override)),
+        },
+    }
+}
+
 /// Minutes-left thresholds at which the user sees an on-screen warning.
 pub const WARNING_THRESHOLDS: [u32; 3] = [10, 5, 1];
 
@@ -178,6 +193,9 @@ pub struct UsageReport {
     pub host: String,
     pub day: NaiveDate,
     pub active_minutes: u32,
+    /// Minutes a parent granted on this machine today with "My parent is here".
+    #[serde(default)]
+    pub local_bonus_minutes: u32,
 }
 
 /// Path of the local socket the client daemon listens on for PAM and greeter queries.
@@ -193,6 +211,8 @@ pub enum SocketRequest {
     RequestTime { username: String, minutes: Option<u32>, reason: Option<String> },
     /// Keep the connection open and receive `SocketResponse::Warning` lines.
     Subscribe { username: String },
+    /// "My parent is here": an administrator signs in on the spot to add time.
+    ParentGrant { username: String, minutes: u32, admin: String, password: String },
 }
 
 /// One JSON line sent back by the client daemon.
@@ -204,6 +224,7 @@ pub enum SocketResponse {
     RequestSent,
     RequestQueued,
     Warning { remaining_minutes: u32 },
+    Granted { minutes: u32 },
     Error { message: String },
 }
 
@@ -310,6 +331,25 @@ mod tests {
         p.downtime = vec![DowntimeWindow { days: vec![Mon], start: t("15:00"), end: t("17:00") }];
         assert!(matches!(evaluate(Some(&p), at("2026-11-02", "16:00"), 0), Decision::Denied { .. }));
         assert!(matches!(evaluate(Some(&p), at("2026-11-02", "17:00"), 0), Decision::Allowed { .. }));
+    }
+
+    #[test]
+    fn parent_override_beats_downtime_and_extends_remaining() {
+        let p = policy();
+        let now = at("2026-11-02", "22:00");
+        let denied = evaluate(Some(&p), now, 0);
+        assert_eq!(
+            apply_override(denied.clone(), now, Some(at("2026-11-02", "22:30"))),
+            Decision::Allowed { remaining_minutes: Some(30) }
+        );
+        // An expired override changes nothing.
+        assert_eq!(apply_override(denied.clone(), now, Some(at("2026-11-02", "21:30"))), denied);
+
+        let now = at("2026-11-02", "20:45");
+        assert_eq!(
+            apply_override(evaluate(Some(&p), now, 0), now, Some(at("2026-11-02", "21:15"))),
+            Decision::Allowed { remaining_minutes: Some(30) }
+        );
     }
 
     #[test]
