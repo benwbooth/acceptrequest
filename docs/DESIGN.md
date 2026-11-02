@@ -22,7 +22,7 @@ SSH, another display manager, `su`) must hit the same wall, so enforcement is la
 6. **Physical access (outside the software).** A firmware password, Secure Boot or a locked boot
    order, and `boot.loader.systemd-boot.editor = false` so nobody can boot with
    `init=/bin/sh`. Without these anyone with the keyboard can get around any OS-level control.
-   The module asserts the editor setting.
+   The client module will assert the editor setting.
 
 ## Warnings that don't interrupt
 
