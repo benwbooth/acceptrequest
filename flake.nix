@@ -16,6 +16,7 @@
           version = "0.1.0";
           src = pkgs.lib.cleanSource ./.;
           cargoLock.lockFile = ./Cargo.lock;
+          buildInputs = [ pkgs.pam ];
           doCheck = false;
           postInstall = ''
             mkdir -p $out/lib/security

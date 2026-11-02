@@ -35,4 +35,14 @@ services.acceptrequest.client = {
 
 ## Status
 
-Scaffold only. Every binary is a stub. See [docs/DESIGN.md](docs/DESIGN.md) for the anti-bypass and warning design.
+- **Client daemon:** working. Counts unlocked session time through logind, warns at 10/5/1 minutes
+  to subscribers on its socket, locks sessions when time runs out and ends them after a grace period,
+  caches policy in `/var/lib/acceptrequest/state.json`, syncs with the server, queues time requests.
+- **PAM module:** working. Fails closed for managed users and shows the reason at login.
+- **NixOS client module:** working, with assertions against the boot menu editor and managed users in wheel.
+- **Server, web UI, greeter, warning overlay:** not started.
+
+The client expects these server endpoints (bearer token auth): `GET /api/client/policy/{user}`,
+`POST /api/client/usage`, `POST /api/client/requests`.
+
+See [docs/DESIGN.md](docs/DESIGN.md) for the anti-bypass and warning design.
