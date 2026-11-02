@@ -3,10 +3,16 @@ self:
 let
   cfg = config.services.acceptrequest.server;
   port = lib.toInt (lib.last (lib.splitString ":" cfg.listen));
+  acmeDir = config.security.acme.certs.${cfg.duckdns.domain}.directory;
+  tls =
+    if cfg.duckdns.domain != null then {
+      certFile = "${acmeDir}/fullchain.pem";
+      keyFile = "${acmeDir}/key.pem";
+    } else cfg.tls;
   # Secrets reach the dynamic service user as systemd credentials, which the server finds by name.
   credentials =
-    lib.optional (cfg.tls != null) "tls-cert:${cfg.tls.certFile}"
-    ++ lib.optional (cfg.tls != null) "tls-key:${cfg.tls.keyFile}"
+    lib.optional (tls != null) "tls-cert:${tls.certFile}"
+    ++ lib.optional (tls != null) "tls-key:${tls.keyFile}"
     ++ lib.optional (cfg.adminPasswordHashFile != null) "admin-hash:${cfg.adminPasswordHashFile}"
     ++ lib.optional (cfg.ntfy.tokenFile != null) "ntfy-token:${cfg.ntfy.tokenFile}";
 in
@@ -25,8 +31,32 @@ in
       type = lib.types.bool;
       default = false;
     };
+    duckdns = {
+      domain = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "yourname.duckdns.org";
+        description = ''
+          Get a Let's Encrypt certificate for this DuckDNS name with a DNS challenge, so phones
+          and computers trust the server with nothing to install. The server doesn't have to be
+          reachable from the internet for this. Replaces `tls`.
+        '';
+      };
+      tokenFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = "File containing just your DuckDNS token.";
+      };
+      email = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Contact address for Let's Encrypt expiry notices.";
+      };
+    };
     publicUrl = lib.mkOption {
       type = lib.types.str;
+      default = if cfg.duckdns.domain != null then "https://${cfg.duckdns.domain}:${toString port}" else "";
+      defaultText = lib.literalExpression ''"https://''${duckdns.domain}:<port>" when duckdns.domain is set'';
       example = "https://screentime.example.net:8443";
       description = "Address your phone uses to reach the server; links in notifications point here.";
     };
@@ -71,14 +101,36 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.publicUrl != "";
+        message = "services.acceptrequest.server.publicUrl must be set (or set duckdns.domain).";
+      }
+      {
+        assertion = cfg.duckdns.domain == null || cfg.duckdns.tokenFile != null;
+        message = "services.acceptrequest.server.duckdns.tokenFile is required with duckdns.domain.";
+      }
+    ];
+
+    security.acme = lib.mkIf (cfg.duckdns.domain != null) {
+      acceptTerms = true;
+      certs.${cfg.duckdns.domain} = {
+        dnsProvider = "duckdns";
+        credentialFiles.DUCKDNS_TOKEN_FILE = cfg.duckdns.tokenFile;
+        email = lib.mkIf (cfg.duckdns.email != null) cfg.duckdns.email;
+        # The server reads the certificate once at startup.
+        reloadServices = [ "acceptrequest-server.service" ];
+      };
+    };
+
     environment.systemPackages = [ cfg.package ];
     networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [ port ];
 
     systemd.services.acceptrequest-server = {
       description = "acceptrequest screen time server";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
+      after = [ "network-online.target" ] ++ lib.optional (cfg.duckdns.domain != null) "acme-${cfg.duckdns.domain}.service";
+      wants = [ "network-online.target" ] ++ lib.optional (cfg.duckdns.domain != null) "acme-${cfg.duckdns.domain}.service";
       environment = {
         ACCEPTREQUEST_LISTEN = cfg.listen;
         ACCEPTREQUEST_DB = "sqlite:///var/lib/acceptrequest-server/acceptrequest.db";

@@ -71,6 +71,21 @@ services.acceptrequest.client.serverFingerprint = "1F:E7:E4:...:3E:6A";
 The fingerprint changes each time you run `gen-cert`; the server also logs it at startup, and
 `acceptrequest-server fingerprint cert.pem` prints it.
 
+**Easiest: a free DuckDNS name.** If you have one, the server can get a real Let's Encrypt
+certificate through a DNS challenge, without being reachable from the internet. Phones and
+computers then trust it with nothing to install or pin, and built-in notifications work:
+
+```nix
+services.acceptrequest.server.duckdns = {
+  domain = "yourname.duckdns.org";
+  tokenFile = "/run/secrets/duckdns_token";   # just the token
+  email = "you@example.com";
+};
+```
+
+The name must lead to the server from wherever the phone is: a router DNS override (or NAT
+loopback) at home and over the VPN, or a port forward.
+
 **Phones are stricter.** Browsers only allow notifications from an HTTPS site they trust, and a
 fingerprint can't be given to a phone browser. With a self-signed certificate the web UI works
 after tapping through the warning, but notifications won't turn on. For notifications without
