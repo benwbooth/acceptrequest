@@ -35,4 +35,4 @@ services.acceptrequest.client = {
 
 ## Status
 
-Scaffold only. Every binary is a stub.
+Scaffold only. Every binary is a stub. See [docs/DESIGN.md](docs/DESIGN.md) for the anti-bypass and warning design.

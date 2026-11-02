@@ -17,7 +17,7 @@ in
     };
     pamServices = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [ "login" "greetd" "sshd" ];
+      default = [ "login" "greetd" "sshd" "su" "sudo" "systemd-user" ];
     };
     greeter.enable = lib.mkEnableOption "the acceptrequest greetd greeter";
   };
