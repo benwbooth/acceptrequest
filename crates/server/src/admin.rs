@@ -23,6 +23,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
+        .route("/api/password", post(change_password))
         .route("/api/overview", get(overview))
         .route("/api/users", post(add_user))
         .route("/api/users/{username}", get(user))
@@ -44,9 +45,13 @@ struct LoginBody {
     password: String,
 }
 
-async fn login(State(s): State<AppState>, Json(body): Json<LoginBody>) -> AppResult<Response> {
-    let Some(hash) = s.config.admin_password_hash.clone() else {
-        return Ok((StatusCode::SERVICE_UNAVAILABLE, "no admin password has been set").into_response());
+pub const MIN_PASSWORD_CHARS: usize = 7;
+
+/// Check the admin password, with the shared throttle. A password changed in the web UI is
+/// stored in the database and takes precedence over the configured hash.
+async fn check_password(s: &AppState, password: String) -> AppResult<bool> {
+    let Some(hash) = db::admin_password_hash(&s.db).await?.or_else(|| s.config.admin_password_hash.clone()) else {
+        return Ok(false);
     };
     {
         let mut failures = s.login_failures.lock().await;
@@ -57,21 +62,55 @@ async fn login(State(s): State<AppState>, Json(body): Json<LoginBody>) -> AppRes
         // Counted before checking so parallel guesses can't all slip under the limit.
         failures.push(Instant::now());
     }
-    let ok = tokio::task::spawn_blocking(move || verify_password(&hash, &body.password)).await?;
-    if !ok {
-        tracing::warn!("failed admin login");
+    let ok = tokio::task::spawn_blocking(move || verify_password(&hash, &password)).await?;
+    if ok {
+        s.login_failures.lock().await.clear();
+    } else {
+        tracing::warn!("wrong admin password");
         tokio::time::sleep(Duration::from_secs(1)).await;
-        return Err(AppError::Unauthorized);
     }
-    s.login_failures.lock().await.clear();
+    Ok(ok)
+}
 
-    let token = db::create_session(&s.db, SESSION_DAYS).await?;
+fn session_cookie(s: &AppState, token: &str) -> String {
     let secure = if s.config.public_url.starts_with("https://") { "; Secure" } else { "" };
-    let cookie = format!(
+    format!(
         "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{secure}",
         SESSION_DAYS * 24 * 3600
-    );
-    Ok(([(SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response())
+    )
+}
+
+async fn login(State(s): State<AppState>, Json(body): Json<LoginBody>) -> AppResult<Response> {
+    if s.config.admin_password_hash.is_none() && db::admin_password_hash(&s.db).await?.is_none() {
+        return Ok((StatusCode::SERVICE_UNAVAILABLE, "no admin password has been set").into_response());
+    }
+    if !check_password(&s, body.password).await? {
+        return Err(AppError::Unauthorized);
+    }
+    let token = db::create_session(&s.db, SESSION_DAYS).await?;
+    Ok(([(SET_COOKIE, session_cookie(&s, &token))], StatusCode::NO_CONTENT).into_response())
+}
+
+#[derive(Deserialize)]
+struct PasswordChange {
+    current: String,
+    new: String,
+}
+
+/// Change the admin password. Signs out every other session and gives this one a fresh cookie.
+async fn change_password(State(s): State<AppState>, _: Admin, Json(body): Json<PasswordChange>) -> AppResult<Response> {
+    if body.new.chars().count() < MIN_PASSWORD_CHARS {
+        return Err(AppError::BadRequest(format!("Use at least {MIN_PASSWORD_CHARS} characters.")));
+    }
+    if !check_password(&s, body.current).await? {
+        return Err(AppError::BadRequest("The current password isn't right.".into()));
+    }
+    let hash = tokio::task::spawn_blocking(move || crate::auth::hash_password(&body.new)).await??;
+    db::set_admin_password_hash(&s.db, &hash).await?;
+    db::delete_all_sessions(&s.db).await?;
+    let token = db::create_session(&s.db, SESSION_DAYS).await?;
+    tracing::info!("admin password changed; other sessions signed out");
+    Ok(([(SET_COOKIE, session_cookie(&s, &token))], StatusCode::NO_CONTENT).into_response())
 }
 
 async fn logout(State(s): State<AppState>, headers: HeaderMap) -> AppResult<Response> {

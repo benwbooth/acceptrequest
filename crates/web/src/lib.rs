@@ -52,10 +52,11 @@ enum Tab {
     Schedules,
     Machines,
     Notifications,
+    Account,
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::Today, Tab::Schedules, Tab::Machines, Tab::Notifications];
+    const ALL: [Tab; 5] = [Tab::Today, Tab::Schedules, Tab::Machines, Tab::Notifications, Tab::Account];
 
     fn label(self) -> &'static str {
         match self {
@@ -63,6 +64,7 @@ impl Tab {
             Tab::Schedules => "Schedules",
             Tab::Machines => "Computers",
             Tab::Notifications => "Alerts",
+            Tab::Account => "Account",
         }
     }
 
@@ -72,6 +74,7 @@ impl Tab {
             Tab::Schedules => "M4 6h16M4 12h16M4 18h10M8 3v6M16 3v6",
             Tab::Machines => "M3 5h18v11H3zM8 20h8M12 16v4",
             Tab::Notifications => "M6 16V11a6 6 0 1 1 12 0v5l2 2H4zM10 20a2 2 0 0 0 4 0",
+            Tab::Account => "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0",
         }
     }
 }
@@ -290,6 +293,7 @@ fn Shell() -> impl IntoView {
                     Tab::Schedules => view! { <SchedulesView/> }.into_any(),
                     Tab::Machines => view! { <MachinesView/> }.into_any(),
                     Tab::Notifications => view! { <NotificationsView/> }.into_any(),
+                    Tab::Account => view! { <AccountView/> }.into_any(),
                 }}
             </main>
         </div>
@@ -722,13 +726,6 @@ fn NotificationsView() -> impl IntoView {
             }
         });
     };
-    let logout = move |_| {
-        spawn_local(async move {
-            let _ = api::logout().await;
-            ctx.overview.set(None);
-            ctx.set_auth(Auth::SignedOut);
-        });
-    };
 
     let body = match support.as_str() {
         "install" => view! {
@@ -769,8 +766,78 @@ fn NotificationsView() -> impl IntoView {
                 n => format!("{n} devices are signed up."),
             })}</p>
         </div>
+    }
+}
+
+#[component]
+fn AccountView() -> impl IntoView {
+    let ctx = ctx();
+    let current = RwSignal::new(String::new());
+    let new = RwSignal::new(String::new());
+    let confirm = RwSignal::new(String::new());
+    let busy = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
+
+    let change = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        let (cur, new_pw) = (current.get_untracked(), new.get_untracked());
+        if new_pw != confirm.get_untracked() {
+            error.set(Some("The new passwords don't match.".into()));
+            return;
+        }
+        if new_pw.chars().count() < 7 {
+            error.set(Some("Use at least 7 characters.".into()));
+            return;
+        }
+        error.set(None);
+        busy.set(true);
+        spawn_local(async move {
+            match api::change_password(&cur, &new_pw).await {
+                Ok(()) => {
+                    for field in [current, new, confirm] {
+                        field.set(String::new());
+                    }
+                    ctx.say("Password changed. Other devices were signed out.", true);
+                }
+                Err(ApiError::Unauthorized) => ctx.set_auth(Auth::SignedOut),
+                Err(e) => error.set(Some(e.to_string())),
+            }
+            busy.set(false);
+        });
+    };
+    let logout = move |_| {
+        spawn_local(async move {
+            let _ = api::logout().await;
+            ctx.overview.set(None);
+            ctx.set_auth(Auth::SignedOut);
+        });
+    };
+    let field = |id: &'static str, label: &'static str, autocomplete: &'static str, value: RwSignal<String>| {
+        view! {
+            <label for=id>{label}</label>
+            <input id=id type="password" autocomplete=autocomplete required
+                prop:value=move || value.get() on:input=move |ev| value.set(event_target_value(&ev))/>
+        }
+    };
+
+    view! {
+        <header class="page-head"><h1>"Account"</h1></header>
+        <form class="card form" on:submit=change>
+            <h3>"Change password"</h3>
+            {field("pw-current", "Current password", "current-password", current)}
+            {field("pw-new", "New password", "new-password", new)}
+            {field("pw-confirm", "New password again", "new-password", confirm)}
+            <p class="muted small">"At least 7 characters. Changing it signs out every other device."</p>
+            {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
+            <div class="row">
+                <button class="primary" disabled=move || busy.get()>
+                    {move || if busy.get() { "Changing…" } else { "Change password" }}
+                </button>
+            </div>
+        </form>
         <div class="card">
-            <h3>"Account"</h3>
+            <h3>"Sign out"</h3>
+            <p class="muted small">"Signs out this device only."</p>
             <button class="ghost" on:click=logout>"Sign out"</button>
         </div>
     }

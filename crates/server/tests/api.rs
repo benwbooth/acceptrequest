@@ -392,3 +392,31 @@ async fn request_sends_encrypted_web_push_with_grant_buttons() {
     assert_eq!(s.call("POST", path, None, None).await.0, StatusCode::OK);
     assert_eq!(s.policy(&pc1, "kid").await.bonus_minutes, 30);
 }
+
+#[tokio::test]
+async fn change_password_from_the_ui() {
+    let s = server(with_password()).await;
+    let old_session = s.admin_cookie().await;
+    let other_session = s.admin_cookie().await;
+    let me = Some(old_session.as_str());
+
+    let change = |current: &str, new: &str| json!({"current": current, "new": new});
+    assert_eq!(s.call("POST", "/api/password", None, Some(change("correct horse", "new pass"))).await.0, StatusCode::UNAUTHORIZED);
+    let (status, _, body) = s.call("POST", "/api/password", me, Some(change("correct horse", "short"))).await;
+    assert_eq!((status, body.as_str()), (StatusCode::BAD_REQUEST, "Use at least 7 characters."));
+    let (status, _, body) = s.call("POST", "/api/password", me, Some(change("wrong", "new pass"))).await;
+    assert_eq!((status, body.as_str()), (StatusCode::BAD_REQUEST, "The current password isn't right."));
+
+    let (status, headers, _) = s.call("POST", "/api/password", me, Some(change("correct horse", "new pass"))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let fresh = headers.iter().find(|(k, _)| k == "set-cookie").unwrap().1.split(';').next().unwrap().to_owned();
+
+    // Every old session is signed out; the one that changed it gets a new cookie.
+    assert_eq!(s.call("GET", "/api/overview", Some(&other_session), None).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(s.call("GET", "/api/overview", me, None).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(s.call("GET", "/api/overview", Some(&fresh), None).await.0, StatusCode::OK);
+
+    // The old password stops working and the new one works, overriding the configured hash.
+    assert_eq!(s.call("POST", "/api/login", None, Some(json!({"password": "correct horse"}))).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(s.call("POST", "/api/login", None, Some(json!({"password": "new pass"}))).await.0, StatusCode::NO_CONTENT);
+}

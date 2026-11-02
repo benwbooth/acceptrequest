@@ -120,6 +120,10 @@ pub async fn logout() -> ApiResult<()> {
     send("POST", "/api/logout", &serde_json::json!({})).await.map(drop)
 }
 
+pub async fn change_password(current: &str, new: &str) -> ApiResult<()> {
+    send("POST", "/api/password", &serde_json::json!({ "current": current, "new": new })).await.map(drop)
+}
+
 pub async fn overview() -> ApiResult<Overview> {
     get("/api/overview").await
 }

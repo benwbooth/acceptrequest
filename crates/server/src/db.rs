@@ -338,6 +338,27 @@ pub async fn create_session(db: &SqlitePool, days: i64) -> Result<String> {
     Ok(token)
 }
 
+const ADMIN_HASH_SETTING: &str = "admin_password_hash";
+
+/// The admin password hash set from the web UI, if it has been changed there.
+pub async fn admin_password_hash(db: &SqlitePool) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar("SELECT value FROM settings WHERE key = ?").bind(ADMIN_HASH_SETTING).fetch_optional(db).await?)
+}
+
+pub async fn set_admin_password_hash(db: &SqlitePool, hash: &str) -> Result<()> {
+    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+        .bind(ADMIN_HASH_SETTING)
+        .bind(hash)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub async fn delete_all_sessions(db: &SqlitePool) -> Result<()> {
+    sqlx::query("DELETE FROM sessions").execute(db).await?;
+    Ok(())
+}
+
 pub async fn delete_session(db: &SqlitePool, token: &str) -> Result<()> {
     sqlx::query("DELETE FROM sessions WHERE token_hash = ?").bind(hash_token(token)).execute(db).await?;
     Ok(())

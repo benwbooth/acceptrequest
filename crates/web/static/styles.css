@@ -77,7 +77,7 @@ label { font-weight: 600; font-size: 0.9rem; }
 
 /* Phone: tab bar along the bottom. */
 @media (max-width: 859px) {
-  .nav { left: 0; right: 0; bottom: 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(4, 1fr); padding: 4px 4px env(safe-area-inset-bottom); }
+  .nav { left: 0; right: 0; bottom: 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(5, 1fr); padding: 4px 4px env(safe-area-inset-bottom); }
   .nav-item { flex-direction: column; gap: 2px; font-size: 0.72rem; padding: 6px 0; min-height: 56px; justify-content: center; }
   .nav-item .dot { top: 2px; left: calc(50% + 6px); }
 }
@@ -134,6 +134,10 @@ label { font-weight: 600; font-size: 0.9rem; }
 .token { margin-top: 16px; border-color: var(--accent); }
 .token-value { display: block; word-break: break-all; background: var(--surface-2); padding: 10px; border-radius: 8px; margin: 8px 0 12px; font-size: 0.85rem; }
 .steps { margin: 0 0 12px; padding-left: 20px; }
+.form { display: flex; flex-direction: column; gap: 8px; }
+.form input { max-width: 420px; }
+.form .row { margin-top: 4px; }
+.form p { margin: 0; }
 .content > .card { margin-top: 16px; }
 
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(80px + env(safe-area-inset-bottom)); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; z-index: 20; max-width: calc(100vw - 32px); box-shadow: 0 4px 16px rgb(0 0 0 / 0.2); }

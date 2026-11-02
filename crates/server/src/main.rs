@@ -31,8 +31,9 @@ async fn main() -> Result<()> {
             } else {
                 std::io::stdin().lock().lines().next().context("no password on stdin")??
             };
-            if password.chars().count() < 7 {
-                anyhow::bail!("use at least 7 characters");
+            let min = acceptrequest_server::admin::MIN_PASSWORD_CHARS;
+            if password.chars().count() < min {
+                anyhow::bail!("use at least {min} characters");
             }
             println!("{}", acceptrequest_server::auth::hash_password(&password)?);
             Ok(())
@@ -71,9 +72,7 @@ async fn serve() -> Result<()> {
     if config.admin_password_hash.is_none() {
         tracing::warn!("no admin password set; the web UI can't be signed into");
     }
-    if config.ntfy_url.is_none() {
-        tracing::warn!("no ACCEPTREQUEST_NTFY_URL set; time requests won't reach your phone");
-    }
+
     let pool = open_db(&config.db_url).await?;
     let addr: std::net::SocketAddr = config.listen.parse().context("ACCEPTREQUEST_LISTEN")?;
     let tls = config.tls.clone();
