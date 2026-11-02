@@ -16,6 +16,14 @@ downtime schedules, and kids asking for more time with a notification on your ph
 | `crates/greeter` | greetd greeter with a "Request more time" button. |
 | `crates/common` | Shared types. |
 
+## Building
+
+`cargo build` uses your normal Cargo setup (kache, if `~/.cargo/config.toml` has it). The web UI
+is built with `crates/web/build.sh`. `nix build` compiles in a persistent target directory,
+`/var/tmp/cargo-nix/acceptrequest` (and `-web`), when the sandbox exposes `/var/tmp/cargo-nix`
+(`nix.settings.extra-sandbox-paths = [ "/var/tmp/cargo-nix?" ]`), so a rebuild only recompiles
+what changed; otherwise it builds from scratch in the sandbox.
+
 ## NixOS
 
 ```nix

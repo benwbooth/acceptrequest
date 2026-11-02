@@ -10,46 +10,86 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
     in
     {
-      packages = forAllSystems (pkgs: rec {
-        # The Leptos UI, compiled to WebAssembly.
-        web = pkgs.rustPlatform.buildRustPackage {
-          pname = "acceptrequest-web";
-          version = "0.1.0";
-          src = pkgs.lib.cleanSource ./.;
-          cargoLock.lockFile = ./Cargo.lock;
-          nativeBuildInputs = [ pkgs.wasm-bindgen-cli pkgs.lld ];
-          buildPhase = ''
+      packages = forAllSystems (
+        pkgs:
+        let
+          cargoDeps = pkgs.rustPlatform.importCargoLock { lockFile = ./Cargo.lock; };
+
+          # Build in a persistent target directory (/var/tmp/cargo-nix, exposed to the sandbox by
+          # the system flake) so rebuilds only recompile what changed, like nixos-update-checker
+          # and Kog. Falls back to a throwaway directory when the sandbox doesn't expose it.
+          # kache stays out of these builds: CARGO_HOME is the build's own.
+          persistentCargo = name: cargoArgs: ''
             runHook preBuild
-            cargo build --frozen --offline --profile wasm-release --target wasm32-unknown-unknown -p acceptrequest-web
+            workDir=$TMPDIR/cargo-nix
+            if [ -w /var/tmp/cargo-nix ]; then
+              workDir=/var/tmp/cargo-nix/${name}
+            fi
+            # The store vendor copy only changes with Cargo.lock; the per-build copy gets new
+            # mtimes, which would rebuild every dependency.
+            sed -i "s|^directory = .*|directory = \"${cargoDeps}\"|" "$NIX_BUILD_TOP/.cargo/config.toml"
+            (
+              # Everything stays writable by everyone: each build may run as a different user.
+              # Kept to this subshell so the outputs get normal permissions.
+              umask 000
+              mkdir -p "$workDir/src" "$workDir/target"
+              touch "$workDir"
+              # Only rewrite files whose content changed; cargo's freshness check relies on mtimes.
+              rsync -rc --no-times --no-perms --chmod=a+rwX --delete ./ "$workDir/src/"
+              # The linker wrapper rejects output paths outside the build dir.
+              export NIX_ENFORCE_PURITY=0
+              cd "$workDir/src"
+              CARGO_HOME="$NIX_BUILD_TOP/.cargo" CARGO_TARGET_DIR="$workDir/target" \
+                cargo build ${cargoArgs} --offline --locked -j "$NIX_BUILD_CORES"
+              find "$workDir/target" -mindepth 1 -user "$(id -u)" ! -perm -o+w -exec chmod a+rwX {} + 2>/dev/null || true
+            )
+            ln -sfn "$workDir/target" target
             runHook postBuild
           '';
-          installPhase = ''
-            runHook preInstall
-            mkdir -p $out
-            wasm-bindgen --target web --no-typescript --out-dir $out \
-              target/wasm32-unknown-unknown/wasm-release/acceptrequest_web.wasm
-            cp crates/web/static/* $out/
-            runHook postInstall
-          '';
-          doCheck = false;
-        };
+        in
+        rec {
+          # The Leptos UI, compiled to WebAssembly.
+          web = pkgs.rustPlatform.buildRustPackage {
+            pname = "acceptrequest-web";
+            version = "0.1.0";
+            src = pkgs.lib.cleanSource ./.;
+            inherit cargoDeps;
+            nativeBuildInputs = [ pkgs.wasm-bindgen-cli pkgs.lld pkgs.rsync ];
+            buildPhase = persistentCargo "acceptrequest-web"
+              "--profile wasm-release --target wasm32-unknown-unknown -p acceptrequest-web";
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out
+              wasm-bindgen --target web --no-typescript --out-dir $out \
+                target/wasm32-unknown-unknown/wasm-release/acceptrequest_web.wasm
+              cp crates/web/static/* $out/
+              runHook postInstall
+            '';
+            doCheck = false;
+          };
 
-        default = pkgs.rustPlatform.buildRustPackage {
-          pname = "acceptrequest";
-          version = "0.1.0";
-          src = pkgs.lib.cleanSource ./.;
-          cargoLock.lockFile = ./Cargo.lock;
-          buildInputs = [ pkgs.pam ];
-          doCheck = false;
-          cargoBuildFlags = [ "--workspace" "--exclude" "acceptrequest-web" ];
-          postInstall = ''
-            mkdir -p $out/lib/security $out/share/acceptrequest
-            mv $out/lib/libpam_acceptrequest.so $out/lib/security/pam_acceptrequest.so
-            rm -f $out/lib/libacceptrequest_web.so
-            ln -s ${web} $out/share/acceptrequest/web
-          '';
-        };
-      });
+          default = pkgs.rustPlatform.buildRustPackage {
+            pname = "acceptrequest";
+            version = "0.1.0";
+            src = pkgs.lib.cleanSource ./.;
+            inherit cargoDeps;
+            nativeBuildInputs = [ pkgs.mold pkgs.rsync ];
+            buildInputs = [ pkgs.pam ];
+            CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
+            buildPhase = persistentCargo "acceptrequest"
+              "--release --workspace --exclude acceptrequest-web";
+            installPhase = ''
+              runHook preInstall
+              install -Dm755 -t $out/bin target/release/{acceptrequest,acceptrequest-client,acceptrequest-greeter,acceptrequest-server}
+              install -Dm755 target/release/libpam_acceptrequest.so $out/lib/security/pam_acceptrequest.so
+              mkdir -p $out/share/acceptrequest
+              ln -s ${web} $out/share/acceptrequest/web
+              runHook postInstall
+            '';
+            doCheck = false;
+          };
+        }
+      );
 
       nixosModules = {
         server = import ./nix/server.nix self;
