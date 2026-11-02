@@ -31,8 +31,8 @@ async fn main() -> Result<()> {
             } else {
                 std::io::stdin().lock().lines().next().context("no password on stdin")??
             };
-            if password.len() < 8 {
-                anyhow::bail!("use at least 8 characters");
+            if password.chars().count() < 7 {
+                anyhow::bail!("use at least 7 characters");
             }
             println!("{}", acceptrequest_server::auth::hash_password(&password)?);
             Ok(())
