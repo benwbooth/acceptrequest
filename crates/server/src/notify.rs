@@ -1,7 +1,10 @@
-//! Phone notifications through ntfy, with one-tap grant buttons.
+//! Phone notifications for time requests, with one-tap grant buttons: Web Push to every
+//! subscribed browser, and ntfy as well if it's configured.
 
 use crate::config::Config;
 use crate::db::RequestRow;
+use crate::push;
+use sqlx::SqlitePool;
 use std::time::Duration;
 
 pub struct Notifier {
@@ -9,6 +12,8 @@ pub struct Notifier {
     url: Option<String>,
     token: Option<String>,
     public_url: String,
+    /// VAPID subject: an https URL or mailto: address push services can use to reach the sender.
+    vapid_subject: String,
 }
 
 /// Up to two quick-grant amounts for the notification (ntfy allows three buttons and the
@@ -34,6 +39,13 @@ impl Notifier {
             url: config.ntfy_url.clone(),
             token: config.ntfy_token.clone(),
             public_url: config.public_url.clone(),
+            vapid_subject: config.vapid_subject.clone().unwrap_or_else(|| {
+                if config.public_url.starts_with("https://") {
+                    config.public_url.clone()
+                } else {
+                    "mailto:acceptrequest@example.invalid".to_owned()
+                }
+            }),
         }
     }
 
@@ -41,15 +53,32 @@ impl Notifier {
         format!("{}/r/{id}/{token}", self.public_url)
     }
 
-    pub async fn time_request(&self, row: &RequestRow, token: &str) {
-        let Some(url) = &self.url else {
-            tracing::info!(id = row.id, "no ntfy URL configured, not notifying");
-            return;
-        };
+    fn action_url(&self, id: i64, token: &str, minutes: u32) -> String {
+        format!("{}/act/{id}/{token}/{minutes}", self.public_url)
+    }
+
+    pub async fn send_push(&self, db: &SqlitePool, payload: &push::Payload) -> anyhow::Result<usize> {
+        push::send_all(db, &self.http, &self.vapid_subject, payload).await
+    }
+
+    pub async fn time_request(&self, db: &SqlitePool, row: &RequestRow, token: &str) {
         let page = self.request_page_url(row.id, token);
-        let mut actions: Vec<String> = quick_amounts(row.requested_minutes)
+        let quick: Vec<(u32, String)> = quick_amounts(row.requested_minutes)
             .into_iter()
-            .map(|m| format!("http, +{m} min, {}/act/{}/{token}/{m}, method=POST, clear=true", self.public_url, row.id))
+            .map(|m| (m, self.action_url(row.id, token, m)))
+            .collect();
+        match self.send_push(db, &push::request_payload(row, page.clone(), &quick)).await {
+            Ok(n) => tracing::info!(id = row.id, delivered = n, "web push sent"),
+            Err(e) => tracing::error!(id = row.id, "web push failed: {e:#}"),
+        }
+        self.ntfy(row, &page, &quick).await;
+    }
+
+    async fn ntfy(&self, row: &RequestRow, page: &str, quick: &[(u32, String)]) {
+        let Some(url) = &self.url else { return };
+        let mut actions: Vec<String> = quick
+            .iter()
+            .map(|(m, act)| format!("http, +{m} min, {act}, method=POST, clear=true"))
             .collect();
         // Header values must be ASCII, so no ellipsis here.
         actions.push(format!("view, More options, {page}"));
@@ -69,15 +98,15 @@ impl Notifier {
             .header("Title", format!("{} wants more screen time", row.username))
             .header("Priority", "high")
             .header("Tags", "hourglass_flowing_sand")
-            .header("Click", &page)
+            .header("Click", page)
             .header("Actions", actions.join("; "))
             .body(body);
         if let Some(t) = &self.token {
             req = req.bearer_auth(t);
         }
         match req.send().await.and_then(|r| r.error_for_status()) {
-            Ok(_) => tracing::info!(id = row.id, "notification sent"),
-            Err(e) => tracing::error!(id = row.id, "notification failed: {e:#}"),
+            Ok(_) => tracing::info!(id = row.id, "ntfy notification sent"),
+            Err(e) => tracing::error!(id = row.id, "ntfy notification failed: {e:#}"),
         }
     }
 }

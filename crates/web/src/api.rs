@@ -1,0 +1,173 @@
+//! JSON types and calls for the server's admin API.
+
+use acceptrequest_common::{Decision, DowntimeWindow};
+use chrono::NaiveDate;
+use gloo_net::http::{Request, Response};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
+pub type Allowances = [Option<u32>; 7];
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HostUsage {
+    pub host: String,
+    pub active_minutes: u32,
+    pub local_bonus_minutes: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct UserOverview {
+    pub username: String,
+    pub allowances: Allowances,
+    pub downtime: Vec<DowntimeWindow>,
+    pub bonus_today: u32,
+    pub usage_today: Vec<HostUsage>,
+    pub used_today: u32,
+    pub decision: Decision,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct RequestRow {
+    pub id: i64,
+    pub username: String,
+    pub host: String,
+    pub requested_minutes: Option<i64>,
+    pub reason: Option<String>,
+    pub status: String,
+    pub granted_minutes: Option<i64>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ClientRow {
+    pub hostname: String,
+    pub last_seen: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Overview {
+    pub today: NaiveDate,
+    pub users: Vec<UserOverview>,
+    pub pending_requests: Vec<RequestRow>,
+    pub clients: Vec<ClientRow>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PushInfo {
+    pub public_key: String,
+    pub subscriptions: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewClientToken {
+    pub hostname: String,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ApiError {
+    /// Not signed in, or the session expired.
+    Unauthorized,
+    Message(String),
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApiError::Unauthorized => write!(f, "Please sign in again."),
+            ApiError::Message(m) => write!(f, "{m}"),
+        }
+    }
+}
+
+type ApiResult<T> = Result<T, ApiError>;
+
+async fn check(resp: Result<Response, gloo_net::Error>) -> ApiResult<Response> {
+    let resp = resp.map_err(|e| ApiError::Message(format!("Can't reach the server ({e}).")))?;
+    match resp.status() {
+        200..=299 => Ok(resp),
+        401 => Err(ApiError::Unauthorized),
+        429 => Err(ApiError::Message("Too many wrong passwords. Try again in a few minutes.".into())),
+        _ => {
+            let text = resp.text().await.unwrap_or_default();
+            Err(ApiError::Message(if text.is_empty() { format!("Error {}", resp.status()) } else { text }))
+        }
+    }
+}
+
+async fn json<T: DeserializeOwned>(resp: Response) -> ApiResult<T> {
+    resp.json().await.map_err(|e| ApiError::Message(format!("Unexpected reply ({e}).")))
+}
+
+async fn get<T: DeserializeOwned>(url: &str) -> ApiResult<T> {
+    json(check(Request::get(url).send().await).await?).await
+}
+
+async fn send<B: Serialize>(method: &str, url: &str, body: &B) -> ApiResult<Response> {
+    let builder = match method {
+        "PUT" => Request::put(url),
+        "DELETE" => Request::delete(url),
+        _ => Request::post(url),
+    };
+    let req = builder.json(body).map_err(|e| ApiError::Message(e.to_string()))?;
+    check(req.send().await).await
+}
+
+pub async fn login(password: &str) -> ApiResult<()> {
+    send("POST", "/api/login", &serde_json::json!({ "password": password })).await.map(drop)
+}
+
+pub async fn logout() -> ApiResult<()> {
+    send("POST", "/api/logout", &serde_json::json!({})).await.map(drop)
+}
+
+pub async fn overview() -> ApiResult<Overview> {
+    get("/api/overview").await
+}
+
+pub async fn add_user(username: &str) -> ApiResult<()> {
+    send("POST", "/api/users", &serde_json::json!({ "username": username })).await.map(drop)
+}
+
+pub async fn add_bonus(username: &str, minutes: u32) -> ApiResult<()> {
+    send("POST", &format!("/api/users/{username}/bonus"), &serde_json::json!({ "minutes": minutes })).await.map(drop)
+}
+
+pub async fn set_allowances(username: &str, allowances: &Allowances) -> ApiResult<()> {
+    send("PUT", &format!("/api/users/{username}/allowances"), allowances).await.map(drop)
+}
+
+pub async fn set_downtime(username: &str, windows: &[DowntimeWindow]) -> ApiResult<()> {
+    send("PUT", &format!("/api/users/{username}/downtime"), &windows).await.map(drop)
+}
+
+pub async fn resolve_request(id: i64, minutes: u32) -> ApiResult<()> {
+    send("POST", &format!("/api/requests/{id}/resolve"), &serde_json::json!({ "minutes": minutes })).await.map(drop)
+}
+
+pub async fn add_client(hostname: &str) -> ApiResult<NewClientToken> {
+    json(send("POST", "/api/clients", &serde_json::json!({ "hostname": hostname })).await?).await
+}
+
+pub async fn remove_client(hostname: &str) -> ApiResult<()> {
+    send("DELETE", &format!("/api/clients/{hostname}"), &serde_json::json!({})).await.map(drop)
+}
+
+pub async fn push_info() -> ApiResult<PushInfo> {
+    get("/api/push").await
+}
+
+pub async fn push_subscribe(subscription_json: &str, label: &str) -> ApiResult<()> {
+    let mut sub: serde_json::Value =
+        serde_json::from_str(subscription_json).map_err(|e| ApiError::Message(e.to_string()))?;
+    sub["label"] = label.into();
+    send("POST", "/api/push/subscribe", &sub).await.map(drop)
+}
+
+pub async fn push_test() -> ApiResult<usize> {
+    #[derive(Deserialize)]
+    struct Delivered {
+        delivered: usize,
+    }
+    let d: Delivered = json(send("POST", "/api/push/test", &serde_json::json!({})).await?).await?;
+    Ok(d.delivered)
+}

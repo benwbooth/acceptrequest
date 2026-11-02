@@ -18,3 +18,13 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Size-optimized build for the WebAssembly UI only. The native binaries keep the default release
+# profile, and the PAM module needs unwinding so a panic can't take down the login process.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

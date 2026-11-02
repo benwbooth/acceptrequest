@@ -5,6 +5,7 @@ use std::io::{BufRead, IsTerminal};
 const USAGE: &str = "usage:
   acceptrequest-server [serve]          run the server (configured by ACCEPTREQUEST_* variables)
   acceptrequest-server hash-password    read a password and print its hash for ACCEPTREQUEST_ADMIN_PASSWORD_HASH
+  acceptrequest-server gen-cert DIR NAME...  make a private CA and a server certificate for NAME (host names / IPs)
   acceptrequest-server add-client HOST  register a machine and print its token (replaces any old one)
   acceptrequest-server list-clients";
 
@@ -40,6 +41,10 @@ async fn main() -> Result<()> {
             let pool = open_db(&config.db_url).await?;
             println!("{}", db::add_client(&pool, host).await?);
             Ok(())
+        }
+        ["gen-cert", dir, names @ ..] => {
+            let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+            acceptrequest_server::certs::generate(std::path::Path::new(dir), &names)
         }
         ["list-clients"] => {
             let config = Config::from_env()?;

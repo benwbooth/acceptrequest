@@ -2,3 +2,4 @@
 /result*
 *.db
 *.db-*
+/crates/web/dist

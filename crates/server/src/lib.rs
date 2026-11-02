@@ -3,11 +3,13 @@
 
 pub mod admin;
 pub mod auth;
+pub mod certs;
 pub mod client_api;
 pub mod config;
 pub mod db;
 pub mod error;
 pub mod notify;
+pub mod push;
 pub mod request_page;
 
 use axum::Router;
@@ -39,13 +41,36 @@ impl AppState {
     }
 }
 
+const CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
+    img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    use axum::http::{HeaderName, HeaderValue, header};
+    use tower_http::set_header::SetResponseHeaderLayer;
+
+    let web_dir = state.config.web_dir.clone();
+    let mut app = Router::new()
         .route("/healthz", axum::routing::get(|| async { "ok" }))
         .merge(client_api::routes())
         .merge(admin::routes())
         .merge(request_page::routes())
-        .with_state(state)
+        .with_state(state);
+    match web_dir {
+        Some(dir) => {
+            let index = tower_http::services::ServeFile::new(dir.join("index.html"));
+            app = app.fallback_service(tower_http::services::ServeDir::new(dir).fallback(index));
+        }
+        None => tracing::warn!("no web UI found; set ACCEPTREQUEST_WEB_DIR to serve it"),
+    }
+    let header = |name: HeaderName, value: &'static str| {
+        SetResponseHeaderLayer::if_not_present(name, HeaderValue::from_static(value))
+    };
+    app.layer(header(header::CONTENT_SECURITY_POLICY, CSP))
+        .layer(header(header::X_CONTENT_TYPE_OPTIONS, "nosniff"))
+        // Notification links carry tokens in the path, so never leak them in a Referer.
+        .layer(header(header::REFERRER_POLICY, "no-referrer"))
+        .layer(header(header::CACHE_CONTROL, "no-cache"))
+        .layer(tower_http::compression::CompressionLayer::new())
 }
 
 /// Open (creating if needed) the database and bring its schema up to date.

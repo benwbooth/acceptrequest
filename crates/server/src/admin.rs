@@ -4,7 +4,7 @@ use crate::auth::{Admin, SESSION_COOKIE, SESSION_DAYS, verify_password};
 use crate::client_api::valid_username;
 use crate::db::{self, Allowances, ClientRow, HostUsage, RequestRow};
 use crate::error::{AppError, AppResult};
-use crate::AppState;
+use crate::{AppState, push};
 use acceptrequest_common::{Decision, DowntimeWindow, evaluate};
 use axum::extract::{Path, Query, State};
 use axum::http::header::{COOKIE, SET_COOKIE};
@@ -33,6 +33,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/requests/{id}/resolve", post(resolve_request))
         .route("/api/clients", get(clients).post(add_client))
         .route("/api/clients/{hostname}", delete(remove_client))
+        .route("/api/push", get(push_info))
+        .route("/api/push/subscribe", post(push_subscribe))
+        .route("/api/push/unsubscribe", post(push_unsubscribe))
+        .route("/api/push/test", post(push_test))
 }
 
 #[derive(Deserialize)]
@@ -263,4 +267,47 @@ async fn add_client(State(s): State<AppState>, _: Admin, Json(body): Json<NewCli
 
 async fn remove_client(State(s): State<AppState>, _: Admin, Path(hostname): Path<String>) -> AppResult<StatusCode> {
     if db::remove_client(&s.db, &hostname).await? { Ok(StatusCode::NO_CONTENT) } else { Err(AppError::NotFound) }
+}
+
+#[derive(Serialize)]
+struct PushInfo {
+    public_key: String,
+    subscriptions: i64,
+}
+
+async fn push_info(State(s): State<AppState>, _: Admin) -> AppResult<Json<PushInfo>> {
+    Ok(Json(PushInfo {
+        public_key: push::public_key(&s.db).await?,
+        subscriptions: push::subscription_count(&s.db).await?,
+    }))
+}
+
+async fn push_subscribe(State(s): State<AppState>, _: Admin, Json(sub): Json<push::Subscription>) -> AppResult<StatusCode> {
+    push::subscribe(&s.db, &sub).await.map_err(|e| AppError::BadRequest(format!("{e:#}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct Endpoint {
+    endpoint: String,
+}
+
+async fn push_unsubscribe(State(s): State<AppState>, _: Admin, Json(body): Json<Endpoint>) -> AppResult<StatusCode> {
+    push::unsubscribe(&s.db, &body.endpoint).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Serialize)]
+struct Delivered {
+    delivered: usize,
+}
+
+async fn push_test(State(s): State<AppState>, _: Admin) -> AppResult<Json<Delivered>> {
+    let payload = push::Payload {
+        title: "Notifications are working".into(),
+        body: "You'll get a notification like this when someone asks for more time.".into(),
+        url: format!("{}/", s.config.public_url),
+        actions: Vec::new(),
+    };
+    Ok(Json(Delivered { delivered: s.notifier.send_push(&s.db, &payload).await? }))
 }

@@ -262,3 +262,74 @@ async fn request_sends_ntfy_notification_with_buttons() {
     assert!(actions.contains("+15 min") && actions.contains("view, More options, https://screentime.example/r/1/"), "{actions}");
     assert!(get("click").starts_with("https://screentime.example/r/1/"));
 }
+
+#[tokio::test]
+async fn request_sends_encrypted_web_push_with_grant_buttons() {
+    use base64ct::{Base64UrlUnpadded, Encoding};
+    use web_push_native::p256::{SecretKey, elliptic_curve::sec1::ToEncodedPoint};
+
+    // A stand-in push service (what FCM or Apple would be) recording what it receives.
+    type Received = Vec<(Vec<(String, String)>, Vec<u8>)>;
+    let seen: Arc<Mutex<Received>> = Arc::default();
+    let record = seen.clone();
+    let fake = Router::new().route(
+        "/push/{id}",
+        axum::routing::post(move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+            let record = record.clone();
+            async move {
+                let h = headers.iter().map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_owned())).collect();
+                record.lock().unwrap().push((h, body.to_vec()));
+                StatusCode::CREATED
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, fake).await.unwrap() });
+
+    let s = server(Config { public_url: "https://screentime.example".into(), ..with_password() }).await;
+    // The browser's side of the subscription.
+    let ua_secret = SecretKey::from_slice(&rand::random::<[u8; 32]>()).unwrap();
+    let auth: [u8; 16] = rand::random();
+    let p256dh = Base64UrlUnpadded::encode_string(ua_secret.public_key().to_encoded_point(false).as_bytes());
+    // Real endpoints must be https; insert directly to point at the local stand-in.
+    sqlx::query("INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, 'now')")
+        .bind(format!("http://{addr}/push/1"))
+        .bind(&p256dh)
+        .bind(Base64UrlUnpadded::encode_string(&auth))
+        .execute(&s.state.db)
+        .await
+        .unwrap();
+
+    let pc1 = db::add_client(&s.state.db, "pc1").await.unwrap();
+    let (status, _, _) = s
+        .call("POST", "/api/client/requests", Some(&pc1), Some(json!({"username": "kid", "host": "pc1", "requested_minutes": 30, "reason": null})))
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    for _ in 0..50 {
+        if !seen.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let (headers, body) = seen.lock().unwrap()[0].clone();
+    let get = |k: &str| headers.iter().find(|(h, _)| h == k).map(|(_, v)| v.clone()).unwrap_or_default();
+    assert_eq!(get("content-encoding"), "aes128gcm");
+    let cookie = s.admin_cookie().await;
+    let (_, _, info) = s.call("GET", "/api/push", Some(&cookie), None).await;
+    let key: Value = serde_json::from_str(&info).unwrap();
+    assert!(get("authorization").contains(&format!("k={}", key["public_key"].as_str().unwrap())), "{}", get("authorization"));
+
+    let plain = web_push_native::decrypt(body, &ua_secret, &web_push_native::Auth::clone_from_slice(&auth)).unwrap();
+    let payload: Value = serde_json::from_slice(&plain).unwrap();
+    assert_eq!(payload["title"], "kid wants more screen time");
+    assert_eq!(payload["actions"][0]["title"], "+30 min");
+    let act = payload["actions"][0]["url"].as_str().unwrap();
+    assert!(act.starts_with("https://screentime.example/act/1/"));
+
+    // The notification button's URL grants the time.
+    let path = act.trim_start_matches("https://screentime.example");
+    assert_eq!(s.call("POST", path, None, None).await.0, StatusCode::OK);
+    assert_eq!(s.policy(&pc1, "kid").await.bonus_minutes, 30);
+}

@@ -1,25 +1,777 @@
-use acceptrequest_common::BonusIncrement;
+//! The acceptrequest admin UI: a Leptos single-page app talking to the server's JSON API.
+
+mod api;
+
+use acceptrequest_common::{Decision, DenyReason, DowntimeWindow};
+use api::{ApiError, Overview, RequestRow, UserOverview};
+use chrono::{NaiveTime, Weekday};
 use leptos::prelude::*;
+use leptos::task::spawn_local;
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen(module = "/push.js")]
+extern "C" {
+    #[wasm_bindgen(js_name = pushSupport)]
+    fn push_support() -> String;
+    #[wasm_bindgen(js_name = pushEnabled)]
+    async fn push_enabled() -> JsValue;
+    #[wasm_bindgen(js_name = enablePush, catch)]
+    async fn enable_push(public_key: &str) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name = deviceLabel)]
+    fn device_label() -> String;
+    #[wasm_bindgen(js_name = localTime)]
+    fn local_time(iso: &str) -> String;
+    #[wasm_bindgen(js_name = localDateTime)]
+    fn local_date_time(iso: &str) -> String;
+    #[wasm_bindgen(js_name = copyText, catch)]
+    async fn copy_text(text: &str) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(js_name = confirmAction)]
+    fn confirm_action(message: &str) -> bool;
+}
+
+const WEEKDAYS: [Weekday; 7] =
+    [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri, Weekday::Sat, Weekday::Sun];
+const PRESETS: [u32; 4] = [15, 30, 45, 60];
+
+#[wasm_bindgen(start)]
+pub fn start() {
+    console_error_panic_hook::set_once();
+    leptos::mount::mount_to_body(App);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Auth {
+    Checking,
+    SignedOut,
+    SignedIn,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Today,
+    Schedules,
+    Machines,
+    Notifications,
+}
+
+impl Tab {
+    const ALL: [Tab; 4] = [Tab::Today, Tab::Schedules, Tab::Machines, Tab::Notifications];
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::Today => "Today",
+            Tab::Schedules => "Schedules",
+            Tab::Machines => "Computers",
+            Tab::Notifications => "Alerts",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Tab::Today => "M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z",
+            Tab::Schedules => "M4 6h16M4 12h16M4 18h10M8 3v6M16 3v6",
+            Tab::Machines => "M3 5h18v11H3zM8 20h8M12 16v4",
+            Tab::Notifications => "M6 16V11a6 6 0 1 1 12 0v5l2 2H4zM10 20a2 2 0 0 0 4 0",
+        }
+    }
+}
+
+/// Shared app state, provided as context.
+#[derive(Clone, Copy)]
+struct Ctx {
+    auth: RwSignal<Auth>,
+    overview: RwSignal<Option<Overview>>,
+    toast: RwSignal<Option<(String, bool)>>,
+    tab: RwSignal<Tab>,
+}
+
+impl Ctx {
+    fn refresh(self) {
+        spawn_local(async move {
+            match api::overview().await {
+                Ok(o) => {
+                    self.overview.set(Some(o));
+                    self.set_auth(Auth::SignedIn);
+                }
+                Err(ApiError::Unauthorized) => self.set_auth(Auth::SignedOut),
+                Err(e) => {
+                    if self.auth.get_untracked() == Auth::Checking {
+                        self.set_auth(Auth::SignedOut);
+                    }
+                    self.say(e.to_string(), false);
+                }
+            }
+        });
+    }
+
+    /// Setting a signal re-runs its views even when the value is unchanged, which would rebuild
+    /// the whole page (and drop unsaved edits) on every refresh.
+    fn set_auth(self, auth: Auth) {
+        if self.auth.get_untracked() != auth {
+            self.auth.set(auth);
+        }
+    }
+
+    fn say(self, message: impl Into<String>, ok: bool) {
+        self.toast.set(Some((message.into(), ok)));
+        let toast = self.toast;
+        spawn_local(async move {
+            gloo_timers::future::TimeoutFuture::new(4000).await;
+            toast.set(None);
+        });
+    }
+
+    /// Run an API call; on success show `done` and reload the overview.
+    fn act<F>(self, done: impl Into<String> + 'static, call: F)
+    where
+        F: std::future::Future<Output = Result<(), ApiError>> + 'static,
+    {
+        let done = done.into();
+        spawn_local(async move {
+            match call.await {
+                Ok(()) => {
+                    if !done.is_empty() {
+                        self.say(done, true);
+                    }
+                    self.refresh();
+                }
+                Err(ApiError::Unauthorized) => self.set_auth(Auth::SignedOut),
+                Err(e) => self.say(e.to_string(), false),
+            }
+        });
+    }
+}
+
+fn ctx() -> Ctx {
+    expect_context::<Ctx>()
+}
+
+fn fmt_minutes(m: u32) -> String {
+    match (m / 60, m % 60) {
+        (0, m) => format!("{m} min"),
+        (h, 0) => format!("{h} h"),
+        (h, m) => format!("{h} h {m} min"),
+    }
+}
+
+fn js_error(e: JsValue) -> String {
+    e.dyn_into::<js_sys::Error>()
+        .map(|e| String::from(e.message()))
+        .unwrap_or_else(|v| v.as_string().unwrap_or_else(|| "Something went wrong.".into()))
+}
+
+/// Headline and tone for a kid's current state.
+fn status(user: &UserOverview, today: chrono::NaiveDate) -> (String, &'static str) {
+    match &user.decision {
+        Decision::Allowed { remaining_minutes: Some(m) } => {
+            (format!("{} left", fmt_minutes(*m)), if *m <= 10 { "warn" } else { "ok" })
+        }
+        Decision::Allowed { remaining_minutes: None } => ("No limit right now".into(), "ok"),
+        Decision::Denied { reason: DenyReason::Downtime { until } } => {
+            let when = if until.date() == today {
+                until.format("%-I:%M %p").to_string()
+            } else {
+                until.format("%a %-I:%M %p").to_string()
+            };
+            (format!("Downtime until {when}"), "off")
+        }
+        Decision::Denied { reason: DenyReason::OutOfTime } => ("Time's up for today".into(), "off"),
+        Decision::Denied { reason: DenyReason::NoPolicy } => ("Not set up".into(), "off"),
+    }
+}
 
 #[component]
-pub fn App() -> impl IntoView {
+fn App() -> impl IntoView {
+    let ctx = Ctx {
+        auth: RwSignal::new(Auth::Checking),
+        overview: RwSignal::new(None),
+        toast: RwSignal::new(None),
+        tab: RwSignal::new(Tab::Today),
+    };
+    provide_context(ctx);
+    ctx.refresh();
+
+    // Keep the page current while it's open.
+    spawn_local(async move {
+        loop {
+            gloo_timers::future::TimeoutFuture::new(30_000).await;
+            if ctx.auth.get_untracked() == Auth::SignedIn {
+                ctx.refresh();
+            }
+        }
+    });
+
     view! {
-        <main>
-            <h1>"acceptrequest"</h1>
-            <BonusPicker />
+        {move || match ctx.auth.get() {
+            Auth::Checking => view! { <div class="splash"><Logo/></div> }.into_any(),
+            Auth::SignedOut => view! { <Login/> }.into_any(),
+            Auth::SignedIn => view! { <Shell/> }.into_any(),
+        }}
+        {move || ctx.toast.get().map(|(msg, ok)| view! {
+            <div class="toast" class:bad=!ok role="status">{msg}</div>
+        })}
+    }
+}
+
+#[component]
+fn Logo() -> impl IntoView {
+    view! { <img class="logo" src="/icon.svg" alt="" width="32" height="32"/> }
+}
+
+#[component]
+fn Login() -> impl IntoView {
+    let ctx = ctx();
+    let password = RwSignal::new(String::new());
+    let busy = RwSignal::new(false);
+    let error = RwSignal::new(None::<String>);
+    let submit = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        busy.set(true);
+        error.set(None);
+        spawn_local(async move {
+            match api::login(&password.get_untracked()).await {
+                Ok(()) => {
+                    password.set(String::new());
+                    ctx.refresh();
+                }
+                Err(ApiError::Unauthorized) => error.set(Some("That password isn't right.".into())),
+                Err(e) => error.set(Some(e.to_string())),
+            }
+            busy.set(false);
+        });
+    };
+    view! {
+        <main class="login">
+            <form class="card login-card" on:submit=submit>
+                <Logo/>
+                <h1>"Screen time"</h1>
+                <p class="muted">"Sign in to manage limits and requests."</p>
+                <label for="pw">"Password"</label>
+                <input id="pw" type="password" autocomplete="current-password" required
+                    prop:value=move || password.get()
+                    on:input=move |ev| password.set(event_target_value(&ev))/>
+                {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
+                <button class="primary" disabled=move || busy.get()>
+                    {move || if busy.get() { "Signing in…" } else { "Sign in" }}
+                </button>
+            </form>
         </main>
     }
 }
 
 #[component]
-fn BonusPicker() -> impl IntoView {
+fn Shell() -> impl IntoView {
+    let ctx = ctx();
+    let pending = move || ctx.overview.with(|o| o.as_ref().map_or(0, |o| o.pending_requests.len()));
+    let nav = move || {
+        Tab::ALL
+            .into_iter()
+            .map(|t| {
+                view! {
+                    <button class="nav-item" class:active=move || ctx.tab.get() == t
+                        on:click=move |_| ctx.tab.set(t)>
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d=t.icon()/></svg>
+                        <span>{t.label()}</span>
+                        {move || (t == Tab::Today && pending() > 0).then(|| view! { <b class="dot">{pending()}</b> })}
+                    </button>
+                }
+            })
+            .collect_view()
+    };
     view! {
-        <div class="bonus-picker">
-            {BonusIncrement::PRESETS
-                .iter()
-                .map(|b| view! { <button>{format!("+{} min", b.minutes())}</button> })
-                .collect_view()}
-            <button>"Custom…"</button>
+        <div class="shell">
+            <nav class="nav">
+                <div class="brand"><Logo/><span>"Screen time"</span></div>
+                {nav}
+            </nav>
+            <main class="content">
+                {move || match ctx.tab.get() {
+                    Tab::Today => view! { <TodayView/> }.into_any(),
+                    Tab::Schedules => view! { <SchedulesView/> }.into_any(),
+                    Tab::Machines => view! { <MachinesView/> }.into_any(),
+                    Tab::Notifications => view! { <NotificationsView/> }.into_any(),
+                }}
+            </main>
+        </div>
+    }
+}
+
+/// 15/30/45/60/custom minute buttons, plus "No" when answering a request.
+#[component]
+fn MinutePicker(on_pick: Callback<u32>, #[prop(optional)] with_no: bool, #[prop(optional)] highlight: Option<u32>) -> impl IntoView {
+    let custom_open = RwSignal::new(false);
+    let custom = RwSignal::new(String::new());
+    let submit_custom = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        if let Ok(m) = custom.get_untracked().trim().parse::<u32>()
+            && (1..=1440).contains(&m)
+        {
+            on_pick.run(m);
+            custom.set(String::new());
+            custom_open.set(false);
+        }
+    };
+    view! {
+        <div class="picker">
+            {with_no.then(|| view! { <button class="chip no" on:click=move |_| on_pick.run(0)>"No"</button> })}
+            {PRESETS.into_iter().map(|m| view! {
+                <button class="chip" class:suggested=highlight == Some(m) on:click=move |_| on_pick.run(m)>
+                    {format!("+{m}")}
+                </button>
+            }).collect_view()}
+            <button class="chip" class:active=move || custom_open.get()
+                on:click=move |_| custom_open.update(|o| *o = !*o)>"Custom"</button>
+        </div>
+        <Show when=move || custom_open.get()>
+            <form class="custom" on:submit=submit_custom>
+                <input type="number" min="1" max="1440" inputmode="numeric" placeholder="Minutes" required
+                    prop:value=move || custom.get() on:input=move |ev| custom.set(event_target_value(&ev))/>
+                <button class="primary">"Add"</button>
+            </form>
+        </Show>
+    }
+}
+
+#[component]
+fn TodayView() -> impl IntoView {
+    let ctx = ctx();
+    let requests = move || ctx.overview.with(|o| o.as_ref().map(|o| o.pending_requests.clone()).unwrap_or_default());
+    let users = move || ctx.overview.with(|o| o.as_ref().map(|o| o.users.clone()).unwrap_or_default());
+    let today = move || ctx.overview.with(|o| o.as_ref().map(|o| o.today)).unwrap_or_default();
+    view! {
+        <header class="page-head"><h1>"Today"</h1></header>
+        <Show when=move || !requests().is_empty()>
+            <section>
+                <h2>"Asking for more time"</h2>
+                <div class="stack">
+                    <For each=requests key=|r| r.id let:r>
+                        <RequestCard r=r/>
+                    </For>
+                </div>
+            </section>
+        </Show>
+        <section>
+            <h2>"Kids"</h2>
+            <Show when=move || !users().is_empty()
+                fallback=|| view! { <p class="empty">"No one yet. Kids appear here once a computer checks in for them, or add one under Schedules."</p> }>
+                <div class="grid">
+                    <For each=users key=|u| format!("{u:?}") let:u>
+                        <KidCard u=u today=today()/>
+                    </For>
+                </div>
+            </Show>
+        </section>
+    }
+}
+
+#[component]
+fn RequestCard(r: RequestRow) -> impl IntoView {
+    let ctx = ctx();
+    let (id, name) = (r.id, r.username.clone());
+    let asked = match r.requested_minutes {
+        Some(m) => format!("wants {} more", fmt_minutes(m as u32)),
+        None => "wants more time".to_owned(),
+    };
+    let pick = Callback::new(move |m: u32| {
+        let done = if m == 0 { format!("Said no to {name}") } else { format!("Gave {name} {m} more minutes") };
+        ctx.act(done, api::resolve_request(id, m));
+    });
+    view! {
+        <article class="card request">
+            <div class="request-head">
+                <div>
+                    <strong>{r.username.clone()}</strong>" "{asked}
+                    <div class="muted small">{format!("on {} · {}", r.host, local_time(&r.created_at))}</div>
+                </div>
+            </div>
+            {r.reason.clone().map(|reason| view! { <blockquote>{reason}</blockquote> })}
+            <MinutePicker on_pick=pick with_no=true highlight=r.requested_minutes.map(|m| m as u32).unwrap_or(0)/>
+        </article>
+    }
+}
+
+#[component]
+fn KidCard(u: UserOverview, today: chrono::NaiveDate) -> impl IntoView {
+    let ctx = ctx();
+    let (headline, tone) = status(&u, today);
+    let name = u.username.clone();
+    let pick = Callback::new(move |m: u32| {
+        let name = name.clone();
+        ctx.act(format!("Added {m} minutes for {name}"), async move { api::add_bonus(&name, m).await })
+    });
+    let limit = u.allowances[today.format("%u").to_string().parse::<usize>().unwrap_or(1) - 1];
+    let local: u32 = u.usage_today.iter().map(|h| h.local_bonus_minutes).sum();
+    let details = [
+        Some(format!("Used {}", fmt_minutes(u.used_today))),
+        Some(match limit {
+            Some(l) => format!("Limit {}", fmt_minutes(l)),
+            None => "No daily limit".into(),
+        }),
+        (u.bonus_today > 0).then(|| format!("+{} bonus", fmt_minutes(u.bonus_today))),
+        (local > 0).then(|| format!("+{} added at the computer", fmt_minutes(local))),
+    ];
+    view! {
+        <article class="card kid">
+            <div class="kid-head">
+                <span class="avatar">{u.username.chars().next().unwrap_or('?').to_uppercase().to_string()}</span>
+                <div>
+                    <strong>{u.username.clone()}</strong>
+                    <div class=format!("status {tone}")>{headline}</div>
+                </div>
+            </div>
+            <ul class="facts">{details.into_iter().flatten().map(|d| view! { <li>{d}</li> }).collect_view()}</ul>
+            <div class="label">"Add time"</div>
+            <MinutePicker on_pick=pick/>
+        </article>
+    }
+}
+
+#[component]
+fn SchedulesView() -> impl IntoView {
+    let ctx = ctx();
+    let users = move || ctx.overview.with(|o| o.as_ref().map(|o| o.users.clone()).unwrap_or_default());
+    let new_kid = RwSignal::new(String::new());
+    let add = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        let name = new_kid.get_untracked().trim().to_lowercase();
+        if !name.is_empty() {
+            new_kid.set(String::new());
+            ctx.act(format!("Added {name}"), async move { api::add_user(&name).await });
+        }
+    };
+    view! {
+        <header class="page-head"><h1>"Schedules"</h1></header>
+        <div class="stack">
+            <For each=users key=|u| u.username.clone() let:u>
+                <ScheduleEditor u=u/>
+            </For>
+        </div>
+        <form class="card add-row" on:submit=add>
+            <label for="newkid">"Add a kid by their Linux user name"</label>
+            <div class="row">
+                <input id="newkid" placeholder="e.g. sam" autocapitalize="none" autocomplete="off" spellcheck="false"
+                    prop:value=move || new_kid.get() on:input=move |ev| new_kid.set(event_target_value(&ev))/>
+                <button class="primary">"Add"</button>
+            </div>
+        </form>
+    }
+}
+
+fn time_value(t: NaiveTime) -> String {
+    t.format("%H:%M").to_string()
+}
+
+#[component]
+fn ScheduleEditor(u: UserOverview) -> impl IntoView {
+    let ctx = ctx();
+    let name = u.username.clone();
+    let allowances = RwSignal::new(u.allowances);
+    let downtime = RwSignal::new(u.downtime.clone());
+    let dirty = RwSignal::new(false);
+
+    let save = {
+        let name = name.clone();
+        move |_| {
+            let (name, a, d) = (name.clone(), allowances.get_untracked(), downtime.get_untracked());
+            if d.iter().any(|w| w.days.is_empty()) {
+                ctx.say("Each downtime needs at least one day.", false);
+                return;
+            }
+            dirty.set(false);
+            ctx.act(format!("Saved {name}'s schedule"), async move {
+                api::set_allowances(&name, &a).await?;
+                api::set_downtime(&name, &d).await
+            });
+        }
+    };
+
+    let limit_rows = WEEKDAYS
+        .into_iter()
+        .enumerate()
+        .map(|(i, day)| {
+            let on = move || allowances.with(|a| a[i].is_some());
+            let minutes = move || allowances.with(|a| a[i].map(|m| m.to_string()).unwrap_or_default());
+            view! {
+                <div class="limit-row">
+                    <span class="day">{format!("{day}")}</span>
+                    <label class="switch">
+                        <input type="checkbox" prop:checked=on on:change=move |ev| {
+                            let checked = event_target_checked(&ev);
+                            allowances.update(|a| a[i] = if checked { Some(120) } else { None });
+                            dirty.set(true);
+                        }/>
+                        <span>{move || if on() { "Limit" } else { "No limit" }}</span>
+                    </label>
+                    <Show when=on>
+                        <input class="minutes" type="number" min="0" max="1440" step="15" inputmode="numeric"
+                            prop:value=minutes on:input=move |ev| {
+                                if let Ok(m) = event_target_value(&ev).parse::<u32>() {
+                                    allowances.update(|a| a[i] = Some(m.min(1440)));
+                                    dirty.set(true);
+                                }
+                            }/>
+                        <span class="muted small">{move || allowances.with(|a| a[i].map(fmt_minutes).unwrap_or_default())}</span>
+                    </Show>
+                </div>
+            }
+        })
+        .collect_view();
+
+    let windows = move || downtime.with(|d| d.iter().cloned().enumerate().collect::<Vec<_>>());
+
+    view! {
+        <article class="card schedule">
+            <div class="kid-head">
+                <span class="avatar">{name.chars().next().unwrap_or('?').to_uppercase().to_string()}</span>
+                <strong>{name.clone()}</strong>
+            </div>
+            <h3>"Daily limit"</h3>
+            <div class="limits">{limit_rows}</div>
+            <h3>"Downtime"</h3>
+            <p class="muted small">"Can't sign in during these times. A window that ends earlier than it starts runs overnight."</p>
+            <div class="stack">
+                <For each=windows key=|(i, w)| format!("{i}{w:?}") let:item>
+                    <DowntimeRow index=item.0 w=item.1 downtime=downtime dirty=dirty/>
+                </For>
+            </div>
+            <button class="ghost" on:click=move |_| {
+                downtime.update(|d| d.push(DowntimeWindow {
+                    days: vec![Weekday::Sun, Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu],
+                    start: NaiveTime::from_hms_opt(21, 0, 0).unwrap(),
+                    end: NaiveTime::from_hms_opt(7, 0, 0).unwrap(),
+                }));
+                dirty.set(true);
+            }>"+ Add downtime"</button>
+            <div class="save-row">
+                <button class="primary" disabled=move || !dirty.get() on:click=save>"Save"</button>
+            </div>
+        </article>
+    }
+}
+
+#[component]
+fn DowntimeRow(index: usize, w: DowntimeWindow, downtime: RwSignal<Vec<DowntimeWindow>>, dirty: RwSignal<bool>) -> impl IntoView {
+    let edit = move |f: Box<dyn FnOnce(&mut DowntimeWindow)>| {
+        downtime.update(|d| {
+            if let Some(w) = d.get_mut(index) {
+                f(w);
+            }
+        });
+        dirty.set(true);
+    };
+    let day_chips = WEEKDAYS
+        .into_iter()
+        .map(|day| {
+            let on = w.days.contains(&day);
+            view! {
+                <button class="day-chip" class:active=on aria-pressed=on.to_string() on:click=move |_| edit(Box::new(move |w| {
+                    if let Some(p) = w.days.iter().position(|d| *d == day) {
+                        w.days.remove(p);
+                    } else {
+                        w.days.push(day);
+                        w.days.sort_by_key(|d| d.num_days_from_monday());
+                    }
+                }))>{format!("{day}").chars().next().unwrap_or('?').to_string()}</button>
+            }
+        })
+        .collect_view();
+    let parse = |ev: &leptos::ev::Event| NaiveTime::parse_from_str(&event_target_value(ev), "%H:%M").ok();
+    view! {
+        <div class="downtime">
+            <div class="days">{day_chips}</div>
+            <div class="times">
+                <input type="time" prop:value=time_value(w.start) on:change=move |ev| {
+                    if let Some(t) = parse(&ev) { edit(Box::new(move |w| w.start = t)) }
+                }/>
+                <span>"to"</span>
+                <input type="time" prop:value=time_value(w.end) on:change=move |ev| {
+                    if let Some(t) = parse(&ev) { edit(Box::new(move |w| w.end = t)) }
+                }/>
+                <button class="icon-button" aria-label="Remove downtime" on:click=move |_| {
+                    downtime.update(|d| { if index < d.len() { d.remove(index); } });
+                    dirty.set(true);
+                }>"✕"</button>
+            </div>
+        </div>
+    }
+}
+
+#[component]
+fn MachinesView() -> impl IntoView {
+    let ctx = ctx();
+    let clients = move || ctx.overview.with(|o| o.as_ref().map(|o| o.clients.clone()).unwrap_or_default());
+    let hostname = RwSignal::new(String::new());
+    let issued = RwSignal::new(None::<api::NewClientToken>);
+    let add = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        let host = hostname.get_untracked().trim().to_owned();
+        if host.is_empty() {
+            return;
+        }
+        spawn_local(async move {
+            match api::add_client(&host).await {
+                Ok(t) => {
+                    hostname.set(String::new());
+                    issued.set(Some(t));
+                    ctx.refresh();
+                }
+                Err(ApiError::Unauthorized) => ctx.set_auth(Auth::SignedOut),
+                Err(e) => ctx.say(e.to_string(), false),
+            }
+        });
+    };
+    view! {
+        <header class="page-head"><h1>"Computers"</h1></header>
+        <div class="card list">
+            <Show when=move || !clients().is_empty() fallback=|| view! { <p class="empty">"No computers yet."</p> }>
+                <For each=clients key=|c| format!("{c:?}") let:c>
+                    {
+                        let host = c.hostname.clone();
+                        view! {
+                            <div class="list-row">
+                                <div>
+                                    <strong>{c.hostname.clone()}</strong>
+                                    <div class="muted small">{c.last_seen.as_deref().map(|t| format!("Last check-in {}", local_date_time(t))).unwrap_or_else(|| "Never checked in".into())}</div>
+                                </div>
+                                <button class="ghost danger" on:click=move |_| {
+                                    let host = host.clone();
+                                    if confirm_action(&format!("Remove {host}? It will stop getting schedules until you add it again.")) {
+                                        ctx.act(format!("Removed {host}"), async move { api::remove_client(&host).await });
+                                    }
+                                }>"Remove"</button>
+                            </div>
+                        }
+                    }
+                </For>
+            </Show>
+        </div>
+        <form class="card add-row" on:submit=add>
+            <label for="host">"Add a computer"</label>
+            <div class="row">
+                <input id="host" placeholder="Its hostname, e.g. kids-pc" autocapitalize="none" autocomplete="off" spellcheck="false"
+                    prop:value=move || hostname.get() on:input=move |ev| hostname.set(event_target_value(&ev))/>
+                <button class="primary">"Add"</button>
+            </div>
+        </form>
+        {move || issued.get().map(|t| {
+            let token = t.token.clone();
+            view! {
+                <div class="card token">
+                    <h3>{format!("Token for {}", t.hostname)}</h3>
+                    <p class="muted small">"Shown only once. Put it in a file on that computer and point services.acceptrequest.client.tokenFile at it."</p>
+                    <code class="token-value">{t.token.clone()}</code>
+                    <div class="row">
+                        <button class="ghost" on:click=move |_| {
+                            let token = token.clone();
+                            spawn_local(async move {
+                                match copy_text(&token).await {
+                                    Ok(_) => ctx.say("Copied", true),
+                                    Err(e) => ctx.say(js_error(e), false),
+                                }
+                            });
+                        }>"Copy"</button>
+                        <button class="ghost" on:click=move |_| issued.set(None)>"Done"</button>
+                    </div>
+                </div>
+            }
+        })}
+    }
+}
+
+#[component]
+fn NotificationsView() -> impl IntoView {
+    let ctx = ctx();
+    let support = push_support();
+    let enabled = RwSignal::new(false);
+    let devices = RwSignal::new(None::<i64>);
+    let busy = RwSignal::new(false);
+    let load = move || {
+        spawn_local(async move {
+            enabled.set(push_enabled().await.as_bool().unwrap_or(false));
+            if let Ok(info) = api::push_info().await {
+                devices.set(Some(info.subscriptions));
+            }
+        })
+    };
+    load();
+
+    let enable = move |_| {
+        busy.set(true);
+        spawn_local(async move {
+            let result = async {
+                let info = api::push_info().await.map_err(|e| e.to_string())?;
+                let sub = enable_push(&info.public_key).await.map_err(js_error)?;
+                let sub = sub.as_string().ok_or("No subscription came back.")?;
+                api::push_subscribe(&sub, &device_label()).await.map_err(|e| e.to_string())
+            }
+            .await;
+            match result {
+                Ok(()) => ctx.say("Notifications are on for this device", true),
+                Err(e) => ctx.say(e, false),
+            }
+            busy.set(false);
+            load();
+        });
+    };
+    let test = move |_| {
+        spawn_local(async move {
+            match api::push_test().await {
+                Ok(0) => ctx.say("No devices have notifications on yet.", false),
+                Ok(n) => ctx.say(format!("Sent to {n} device{}", if n == 1 { "" } else { "s" }), true),
+                Err(e) => ctx.say(e.to_string(), false),
+            }
+        });
+    };
+    let logout = move |_| {
+        spawn_local(async move {
+            let _ = api::logout().await;
+            ctx.overview.set(None);
+            ctx.set_auth(Auth::SignedOut);
+        });
+    };
+
+    let body = match support.as_str() {
+        "install" => view! {
+            <p>"On iPhone and iPad, notifications only work from the Home Screen app:"</p>
+            <ol class="steps">
+                <li>"Tap the Share button in Safari."</li>
+                <li>"Choose “Add to Home Screen”."</li>
+                <li>"Open Screen time from your Home Screen and come back here."</li>
+            </ol>
+        }.into_any(),
+        "insecure" => view! {
+            <p>"Notifications need a secure (HTTPS) connection that this device trusts. If you use your own certificate, install its ca.pem on this device first."</p>
+        }.into_any(),
+        "unsupported" => view! { <p>"This browser can't receive web notifications. Try Chrome on Android or Safari on iPhone."</p> }.into_any(),
+        _ => view! {
+            <p>{move || if enabled.get() {
+                "This device gets a notification whenever someone asks for more time."
+            } else {
+                "Turn on notifications to hear about time requests on this device, and answer them from the notification."
+            }}</p>
+            <div class="row">
+                <button class="primary" disabled=move || busy.get() || enabled.get() on:click=enable>
+                    {move || if enabled.get() { "On for this device" } else if busy.get() { "Turning on…" } else { "Turn on notifications" }}
+                </button>
+                <button class="ghost" on:click=test>"Send a test"</button>
+            </div>
+        }.into_any(),
+    };
+
+    view! {
+        <header class="page-head"><h1>"Alerts"</h1></header>
+        <div class="card">
+            <h3>"Notifications"</h3>
+            {body}
+            <p class="muted small">{move || devices.get().map(|n| match n {
+                0 => "No devices are signed up yet.".to_owned(),
+                1 => "1 device is signed up.".to_owned(),
+                n => format!("{n} devices are signed up."),
+            })}</p>
+        </div>
+        <div class="card">
+            <h3>"Account"</h3>
+            <button class="ghost" on:click=logout>"Sign out"</button>
         </div>
     }
 }

@@ -15,6 +15,9 @@ pub struct Config {
     /// Full ntfy topic URL, e.g. `https://ntfy.sh/some-long-random-topic`.
     pub ntfy_url: Option<String>,
     pub ntfy_token: Option<String>,
+    pub vapid_subject: Option<String>,
+    /// The built web UI. Defaults to `../share/acceptrequest/web` next to the executable.
+    pub web_dir: Option<PathBuf>,
     /// Daily minutes for a user the server hasn't seen before.
     pub default_allowance_minutes: u32,
 }
@@ -64,6 +67,12 @@ impl Config {
                 .or(from_file("ACCEPTREQUEST_ADMIN_PASSWORD_HASH_FILE", "admin-hash")?),
             ntfy_url: var("ACCEPTREQUEST_NTFY_URL"),
             ntfy_token: var("ACCEPTREQUEST_NTFY_TOKEN").or(from_file("ACCEPTREQUEST_NTFY_TOKEN_FILE", "ntfy-token")?),
+            vapid_subject: var("ACCEPTREQUEST_VAPID_SUBJECT"),
+            web_dir: var("ACCEPTREQUEST_WEB_DIR").map(PathBuf::from).or_else(|| {
+                let exe = std::env::current_exe().ok()?;
+                let dir = exe.parent()?.parent()?.join("share/acceptrequest/web");
+                dir.join("index.html").exists().then_some(dir)
+            }),
             default_allowance_minutes: match var("ACCEPTREQUEST_DEFAULT_ALLOWANCE") {
                 Some(m) => m.parse().context("ACCEPTREQUEST_DEFAULT_ALLOWANCE")?,
                 None => 120,

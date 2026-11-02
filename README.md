@@ -7,7 +7,7 @@ downtime schedules, and kids asking for more time with a notification on your ph
 
 | Crate | What it does |
 |---|---|
-| `crates/server` | Axum + SQLite policy server over HTTPS, password protected. Hosts the web UI and sends ntfy notifications with one-tap grant buttons. |
+| `crates/server` | Axum + SQLite policy server over HTTPS, password protected. Hosts the web UI and sends Web Push (or ntfy) notifications with one-tap grant buttons. |
 | `crates/web` | Leptos admin UI with desktop and mobile layouts: downtime schedules, allowances, bonus time (+0/15/30/45/60/custom minutes), pending requests. |
 | `crates/client` | Root daemon on each machine. Tracks active time through logind, warns at 10/5/1 minutes, locks then terminates sessions, caches policy for offline use. |
 | `crates/pam` | `pam_acceptrequest.so`, an account-phase module that blocks login outside allowed time by asking the local daemon. |
@@ -44,33 +44,48 @@ services.acceptrequest.client = {
 - **NixOS client module:** working, with assertions against the boot menu editor and managed users in wheel.
 - **Server:** working. SQLite storage, per-day allowances shared across machines, downtime,
   bonuses, time requests, per-machine tokens, admin login (argon2, HttpOnly SameSite=Strict cookie,
-  throttled), ntfy notifications with one-tap +N buttons and a page offering 0/15/30/45/60/custom,
-  HTTPS via rustls. The admin JSON API is ready for the web UI.
-- **Web UI, greeter, warning overlay:** not started.
+  throttled), HTTPS via rustls, and a private CA generator for self-signed setups.
+- **Notifications:** built-in Web Push (no extra app or service) with one-tap +N buttons, plus a
+  page offering 0/15/30/45/60/custom. ntfy is optional.
+- **Web UI:** working. Leptos, phone layout (bottom tabs) and desktop layout (sidebar): today's
+  status and requests, add time, per-day limits and downtime, computers, notifications.
+- **Greeter, warning overlay:** not started.
 
 ## Setting up the server
 
 ```sh
 acceptrequest-server hash-password > admin.hash      # then point adminPasswordHashFile at it
+acceptrequest-server gen-cert /var/lib/acceptrequest-tls screentime.lan 192.168.1.10
 acceptrequest-server add-client kids-pc              # prints the token for that machine's tokenFile
 ```
 
-The certificate must be a real server certificate (Let's Encrypt, `tailscale cert`, or one issued
-by your own CA, with that CA given to clients as `caFile`). A bare self-signed certificate is
-rejected by the client.
+`gen-cert` makes a private CA (`ca.pem`, `ca.key`) and a server certificate signed by it
+(`cert.pem`, `key.pem`) for the names and addresses you list. Running it again reuses the CA.
+Copy `ca.pem` to each computer and set `services.acceptrequest.client.caFile`, and install it on
+your phone once:
 
-For notifications, install the ntfy app on your phone and subscribe to a long random topic, e.g.
-`https://ntfy.sh/acceptrequest-<random>`, then set `services.acceptrequest.server.ntfy.url` to it.
-`publicUrl` must be reachable from the phone for the buttons to work.
+- **iPhone:** AirDrop or email `ca.pem` to yourself, install the profile in Settings, then turn it on
+  under Settings > General > About > Certificate Trust Settings.
+- **Android:** Settings > Security > Encryption & credentials > Install a certificate > CA certificate.
+
+A certificate from Let's Encrypt or `tailscale cert` works too, with no `caFile` needed. A bare
+self-signed certificate (one that is its own CA) is rejected by the client.
+
+### Notifications
+
+Open the web UI on your phone, go to Alerts and tap "Turn on notifications". On iPhone, first add
+the page to your Home Screen (Share > Add to Home Screen) and open it from there; iOS doesn't show
+the +15/+30 buttons on web notifications, so tapping opens the page with every choice instead.
+`publicUrl` must be reachable from the phone. ntfy also works if you'd rather use its app: set
+`services.acceptrequest.server.ntfy.url` to a long random topic.
 
 ```nix
 services.acceptrequest.server = {
   enable = true;
   openFirewall = true;
   publicUrl = "https://screentime.example.net:8443";
-  tls = { certFile = "/var/lib/acme/screentime/cert.pem"; keyFile = "/var/lib/acme/screentime/key.pem"; };
+  tls = { certFile = "/var/lib/acceptrequest-tls/cert.pem"; keyFile = "/var/lib/acceptrequest-tls/key.pem"; };
   adminPasswordHashFile = "/run/secrets/acceptrequest-admin-hash";
-  ntfy.url = "https://ntfy.sh/acceptrequest-<random>";
 };
 ```
 

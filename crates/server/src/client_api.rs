@@ -57,8 +57,8 @@ async fn request_time(
     let reason: Option<String> = req.reason.map(|r| r.chars().take(500).collect());
     let (row, token) = db::create_request(&s.db, user, &client.hostname, minutes, reason.as_deref()).await?;
     tracing::info!(id = row.id, user = %row.username, host = %row.host, "time requested");
-    let notifier = s.notifier.clone();
-    tokio::spawn(async move { notifier.time_request(&row, &token).await });
+    let (notifier, db) = (s.notifier.clone(), s.db.clone());
+    tokio::spawn(async move { notifier.time_request(&db, &row, &token).await });
     Ok(StatusCode::CREATED)
 }
 
