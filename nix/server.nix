@@ -57,6 +57,11 @@ in
         default = null;
         description = "ntfy access token, if the topic needs one.";
       };
+      replyUrl = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Topic the notification buttons answer on. Defaults to the topic URL plus `-answers`.";
+      };
     };
     defaultAllowanceMinutes = lib.mkOption {
       type = lib.types.ints.unsigned;
@@ -81,6 +86,8 @@ in
         ACCEPTREQUEST_DEFAULT_ALLOWANCE = toString cfg.defaultAllowanceMinutes;
       } // lib.optionalAttrs (cfg.ntfy.url != null) {
         ACCEPTREQUEST_NTFY_URL = cfg.ntfy.url;
+      } // lib.optionalAttrs (cfg.ntfy.replyUrl != null) {
+        ACCEPTREQUEST_NTFY_REPLY_URL = cfg.ntfy.replyUrl;
       };
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/acceptrequest-server serve";

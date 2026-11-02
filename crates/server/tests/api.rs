@@ -211,27 +211,69 @@ async fn no_password_means_no_login() {
     );
 }
 
-#[tokio::test]
-async fn request_sends_ntfy_notification_with_buttons() {
-    // A stand-in ntfy server that records what it receives.
-    type Received = Vec<(Vec<(String, String)>, String)>;
-    let seen: Arc<Mutex<Received>> = Arc::default();
-    let record = seen.clone();
-    let fake = Router::new().route(
-        "/topic",
-        axum::routing::post(move |headers: axum::http::HeaderMap, body: String| {
-            let record = record.clone();
-            async move {
-                let h = headers.iter().map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_owned())).collect();
-                record.lock().unwrap().push((h, body));
-                "{}"
-            }
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, fake).await.unwrap() });
+/// A stand-in ntfy server: publishing stores a message on a topic, and `/{topic}/json` returns
+/// the stored messages as JSON lines and closes, which the server treats as a reconnect.
+#[derive(Clone, Default)]
+struct FakeNtfy {
+    topics: Arc<Mutex<Vec<(String, Vec<(String, String)>, String)>>>,
+}
 
+impl FakeNtfy {
+    async fn start(&self) -> std::net::SocketAddr {
+        let publish = self.clone();
+        let subscribe = self.clone();
+        let app = Router::new()
+            .route(
+                "/{topic}",
+                axum::routing::post(move |axum::extract::Path(topic): axum::extract::Path<String>, headers: axum::http::HeaderMap, body: String| {
+                    let me = publish.clone();
+                    async move {
+                        let h = headers.iter().map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_owned())).collect();
+                        me.topics.lock().unwrap().push((topic, h, body));
+                        "{}"
+                    }
+                }),
+            )
+            .route(
+                "/{topic}/json",
+                axum::routing::get(move |axum::extract::Path(topic): axum::extract::Path<String>| {
+                    let me = subscribe.clone();
+                    async move {
+                        let topics = me.topics.lock().unwrap();
+                        topics
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, (t, _, _))| *t == topic)
+                            .map(|(i, (_, _, body))| json!({"id": format!("m{i}"), "event": "message", "message": body}).to_string() + "\n")
+                            .collect::<String>()
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        addr
+    }
+
+    fn on(&self, topic: &str) -> Vec<(Vec<(String, String)>, String)> {
+        self.topics.lock().unwrap().iter().filter(|(t, _, _)| t == topic).map(|(_, h, b)| (h.clone(), b.clone())).collect()
+    }
+
+    async fn wait_for(&self, topic: &str, count: usize) {
+        for _ in 0..200 {
+            if self.on(topic).len() >= count {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("timed out waiting for {count} message(s) on {topic}");
+    }
+}
+
+#[tokio::test]
+async fn ntfy_buttons_answer_through_ntfy() {
+    let ntfy = FakeNtfy::default();
+    let addr = ntfy.start().await;
     let s = server(Config {
         ntfy_url: Some(format!("http://{addr}/topic")),
         ntfy_token: Some("tk".into()),
@@ -239,28 +281,42 @@ async fn request_sends_ntfy_notification_with_buttons() {
         ..Config::default()
     })
     .await;
+    tokio::spawn(acceptrequest_server::notify::follow_replies(s.state.clone()));
     let pc1 = db::add_client(&s.state.db, "pc1").await.unwrap();
     let (status, _, _) = s
         .call("POST", "/api/client/requests", Some(&pc1), Some(json!({"username": "kid", "host": "pc1", "requested_minutes": 45, "reason": "finish the level"})))
         .await;
     assert_eq!(status, StatusCode::CREATED);
+    ntfy.wait_for("topic", 1).await;
 
-    for _ in 0..50 {
-        if !seen.lock().unwrap().is_empty() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    let seen = seen.lock().unwrap();
-    let (headers, body) = &seen[0];
-    let get = |k: &str| headers.iter().find(|(h, _)| h == k).map(|(_, v)| v.as_str()).unwrap_or("");
+    let (headers, body) = ntfy.on("topic")[0].clone();
+    let get = |k: &str| headers.iter().find(|(h, _)| h == k).map(|(_, v)| v.clone()).unwrap_or_default();
     assert_eq!(get("title"), "kid wants more screen time");
     assert_eq!(get("authorization"), "Bearer tk");
     assert!(body.contains("45 more minutes on pc1") && body.contains("finish the level"), "{body}");
-    let actions = get("actions");
-    assert!(actions.starts_with("http, +45 min, https://screentime.example/act/1/"), "{actions}");
-    assert!(actions.contains("+15 min") && actions.contains("view, More options, https://screentime.example/r/1/"), "{actions}");
     assert!(get("click").starts_with("https://screentime.example/r/1/"));
+    // Three buttons, each posting back to the answers topic, never to the server itself.
+    let actions = get("actions");
+    let buttons: Vec<&str> = actions.split("; ").collect();
+    assert_eq!(buttons.len(), 3, "{actions}");
+    assert!(buttons[0].starts_with(&format!("http, +45 min, http://{addr}/topic-answers, method=POST, body=grant:1:")), "{actions}");
+    assert!(buttons[0].contains("headers.Authorization=Bearer tk") && !actions.contains("screentime.example"), "{actions}");
+
+    // A forged answer is ignored; the phone tapping "+45 min" grants it.
+    let real = buttons[0].split("body=").nth(1).unwrap().split(',').next().unwrap().to_owned();
+    let client = reqwest::Client::new();
+    client.post(format!("http://{addr}/topic-answers")).body("grant:1:not-the-token:600").send().await.unwrap();
+    client.post(format!("http://{addr}/topic-answers")).body(real.clone()).send().await.unwrap();
+    ntfy.wait_for("topic", 2).await;
+    assert_eq!(s.policy(&pc1, "kid").await.bonus_minutes, 45);
+    let (confirm_headers, _) = ntfy.on("topic")[1].clone();
+    assert!(confirm_headers.iter().any(|(k, v)| k == "title" && v == "Gave kid 45 more minutes"));
+
+    // Replaying the same answer does nothing more.
+    client.post(format!("http://{addr}/topic-answers")).body(real).send().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    assert_eq!(s.policy(&pc1, "kid").await.bonus_minutes, 45);
+    assert_eq!(ntfy.on("topic").len(), 2);
 }
 
 #[tokio::test]

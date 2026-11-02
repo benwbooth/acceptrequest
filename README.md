@@ -86,11 +86,21 @@ Security > Install a certificate > CA certificate).
 
 ### Notifications
 
-Open the web UI on your phone, go to Alerts and tap "Turn on notifications". On iPhone, first add
-the page to your Home Screen (Share > Add to Home Screen) and open it from there; iOS doesn't show
-the +15/+30 buttons on web notifications, so tapping opens the page with every choice instead.
-`publicUrl` must be reachable from the phone. ntfy also works if you'd rather use its app: set
-`services.acceptrequest.server.ntfy.url` to a long random topic.
+There are two ways to get time requests on your phone; you can use either or both.
+
+**ntfy (works with a self-signed certificate).** Install the ntfy app, subscribe to a long random
+topic such as `https://ntfy.sh/acceptrequest-k3v9q2x7...`, and set
+`services.acceptrequest.server.ntfy.url` to it. Requests arrive with up to three +N buttons. A
+button posts its answer to `<topic>-answers` on ntfy, which the server follows, so the phone never
+connects to the server: the buttons work from anywhere and no certificate has to be trusted.
+Each answer carries a single-use secret, so only buttons from a real notification can grant time.
+Tapping the notification opens the page with every amount (0/15/30/45/60/custom); that needs the
+server reachable, e.g. over your VPN. Keep the topic name secret: anyone who knows it can read the
+notifications and use their buttons.
+
+**Built-in Web Push (no app).** Open the web UI on your phone, go to Alerts and tap "Turn on
+notifications". This needs a certificate the phone trusts (Let's Encrypt, or `ca.pem` installed
+on the phone). On iPhone, first add the page to the Home Screen and open it from there.
 
 ```nix
 services.acceptrequest.server = {

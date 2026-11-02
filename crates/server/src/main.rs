@@ -77,7 +77,9 @@ async fn serve() -> Result<()> {
     let pool = open_db(&config.db_url).await?;
     let addr: std::net::SocketAddr = config.listen.parse().context("ACCEPTREQUEST_LISTEN")?;
     let tls = config.tls.clone();
-    let app = router(AppState::new(pool, config)).into_make_service();
+    let state = AppState::new(pool, config);
+    tokio::spawn(acceptrequest_server::notify::follow_replies(state.clone()));
+    let app = router(state).into_make_service();
 
     match tls {
         Some((cert, key)) => {
