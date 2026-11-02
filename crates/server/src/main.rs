@@ -1,26 +1,88 @@
-use anyhow::Result;
-use axum::{Router, routing::get};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use std::str::FromStr;
+use acceptrequest_server::{AppState, config::Config, db, open_db, router};
+use anyhow::{Context, Result};
+use std::io::{BufRead, IsTerminal};
+
+const USAGE: &str = "usage:
+  acceptrequest-server [serve]          run the server (configured by ACCEPTREQUEST_* variables)
+  acceptrequest-server hash-password    read a password and print its hash for ACCEPTREQUEST_ADMIN_PASSWORD_HASH
+  acceptrequest-server add-client HOST  register a machine and print its token (replaces any old one)
+  acceptrequest-server list-clients";
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+        )
         .init();
 
-    let db_url = std::env::var("ACCEPTREQUEST_DB").unwrap_or_else(|_| "sqlite://acceptrequest.db".into());
-    let pool = SqlitePoolOptions::new()
-        .connect_with(SqliteConnectOptions::from_str(&db_url)?.create_if_missing(true))
-        .await?;
-    sqlx::migrate!().run(&pool).await?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        [] | ["serve"] => serve().await,
+        ["hash-password"] => {
+            let password = if std::io::stdin().is_terminal() {
+                let p = rpassword::prompt_password("Admin password: ")?;
+                if p != rpassword::prompt_password("Again: ")? {
+                    anyhow::bail!("passwords don't match");
+                }
+                p
+            } else {
+                std::io::stdin().lock().lines().next().context("no password on stdin")??
+            };
+            if password.len() < 8 {
+                anyhow::bail!("use at least 8 characters");
+            }
+            println!("{}", acceptrequest_server::auth::hash_password(&password)?);
+            Ok(())
+        }
+        ["add-client", host] => {
+            let config = Config::from_env()?;
+            let pool = open_db(&config.db_url).await?;
+            println!("{}", db::add_client(&pool, host).await?);
+            Ok(())
+        }
+        ["list-clients"] => {
+            let config = Config::from_env()?;
+            let pool = open_db(&config.db_url).await?;
+            for c in db::list_clients(&pool).await? {
+                println!("{}\t{}", c.hostname, c.last_seen.as_deref().unwrap_or("never"));
+            }
+            Ok(())
+        }
+        _ => {
+            eprintln!("{USAGE}");
+            std::process::exit(2);
+        }
+    }
+}
 
-    // TODO: rustls termination, argon2 password login, policy/request API, Leptos SSR routes, ntfy.
-    let app = Router::new().route("/healthz", get(|| async { "ok" }));
+async fn serve() -> Result<()> {
+    let config = Config::from_env()?;
+    if config.admin_password_hash.is_none() {
+        tracing::warn!("no admin password set; the web UI can't be signed into");
+    }
+    if config.ntfy_url.is_none() {
+        tracing::warn!("no ACCEPTREQUEST_NTFY_URL set; time requests won't reach your phone");
+    }
+    let pool = open_db(&config.db_url).await?;
+    let addr: std::net::SocketAddr = config.listen.parse().context("ACCEPTREQUEST_LISTEN")?;
+    let tls = config.tls.clone();
+    let app = router(AppState::new(pool, config)).into_make_service();
 
-    let addr = std::env::var("ACCEPTREQUEST_LISTEN").unwrap_or_else(|_| "127.0.0.1:8443".into());
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    tracing::info!("listening on {addr}");
-    axum::serve(listener, app).await?;
+    match tls {
+        Some((cert, key)) => {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
+                .await
+                .with_context(|| format!("loading TLS cert {} and key {}", cert.display(), key.display()))?;
+            tracing::info!("listening on https://{addr}");
+            axum_server::bind_rustls(addr, tls).serve(app).await?;
+        }
+        None => {
+            tracing::warn!("no TLS certificate set; serving plain HTTP, which is only safe behind a TLS proxy");
+            tracing::info!("listening on http://{addr}");
+            axum_server::bind(addr).serve(app).await?;
+        }
+    }
     Ok(())
 }

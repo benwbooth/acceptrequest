@@ -2,6 +2,7 @@
 
 use acceptrequest_common::{Policy, TimeRequest, UsageReport};
 use anyhow::{Context, Result};
+use std::path::Path;
 use std::time::Duration;
 
 pub struct ServerApi {
@@ -11,8 +12,13 @@ pub struct ServerApi {
 }
 
 impl ServerApi {
-    pub fn new(base: String, token: Option<String>) -> Result<ServerApi> {
-        let http = reqwest::Client::builder().timeout(Duration::from_secs(10)).build()?;
+    pub fn new(base: String, token: Option<String>, ca_file: Option<&Path>) -> Result<ServerApi> {
+        let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(10));
+        if let Some(path) = ca_file {
+            let pem = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+            builder = builder.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
+        }
+        let http = builder.build()?;
         Ok(ServerApi { http, base, token })
     }
 

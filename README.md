@@ -42,9 +42,36 @@ services.acceptrequest.client = {
   admin password adds time on the spot, even during downtime or offline.
 - **PAM module:** working. Fails closed for managed users and shows the reason at login.
 - **NixOS client module:** working, with assertions against the boot menu editor and managed users in wheel.
-- **Server, web UI, greeter, warning overlay:** not started.
+- **Server:** working. SQLite storage, per-day allowances shared across machines, downtime,
+  bonuses, time requests, per-machine tokens, admin login (argon2, HttpOnly SameSite=Strict cookie,
+  throttled), ntfy notifications with one-tap +N buttons and a page offering 0/15/30/45/60/custom,
+  HTTPS via rustls. The admin JSON API is ready for the web UI.
+- **Web UI, greeter, warning overlay:** not started.
 
-The client expects these server endpoints (bearer token auth): `GET /api/client/policy/{user}`,
-`POST /api/client/usage`, `POST /api/client/requests`.
+## Setting up the server
+
+```sh
+acceptrequest-server hash-password > admin.hash      # then point adminPasswordHashFile at it
+acceptrequest-server add-client kids-pc              # prints the token for that machine's tokenFile
+```
+
+The certificate must be a real server certificate (Let's Encrypt, `tailscale cert`, or one issued
+by your own CA, with that CA given to clients as `caFile`). A bare self-signed certificate is
+rejected by the client.
+
+For notifications, install the ntfy app on your phone and subscribe to a long random topic, e.g.
+`https://ntfy.sh/acceptrequest-<random>`, then set `services.acceptrequest.server.ntfy.url` to it.
+`publicUrl` must be reachable from the phone for the buttons to work.
+
+```nix
+services.acceptrequest.server = {
+  enable = true;
+  openFirewall = true;
+  publicUrl = "https://screentime.example.net:8443";
+  tls = { certFile = "/var/lib/acme/screentime/cert.pem"; keyFile = "/var/lib/acme/screentime/key.pem"; };
+  adminPasswordHashFile = "/run/secrets/acceptrequest-admin-hash";
+  ntfy.url = "https://ntfy.sh/acceptrequest-<random>";
+};
+```
 
 See [docs/DESIGN.md](docs/DESIGN.md) for the anti-bypass and warning design.

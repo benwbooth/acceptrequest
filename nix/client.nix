@@ -24,6 +24,11 @@ in
       default = null;
       description = "File holding this machine's API token for the server.";
     };
+    caFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = "Extra CA certificate to trust for the server, for a certificate from your own CA.";
+    };
     managedUsers = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -82,6 +87,8 @@ in
         ACCEPTREQUEST_SERVER = cfg.serverUrl;
       } // lib.optionalAttrs (cfg.tokenFile != null) {
         ACCEPTREQUEST_TOKEN_FILE = toString cfg.tokenFile;
+      } // lib.optionalAttrs (cfg.caFile != null) {
+        ACCEPTREQUEST_CA_FILE = toString cfg.caFile;
       };
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/acceptrequest-client";

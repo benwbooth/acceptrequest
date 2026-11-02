@@ -6,6 +6,8 @@ pub struct Config {
     /// Base URL of the acceptrequest server. Without one the daemon runs on its cached policy.
     pub server: Option<String>,
     pub token: Option<String>,
+    /// Extra CA certificate (PEM) to trust for the server, e.g. for a self-signed one.
+    pub ca_file: Option<PathBuf>,
     pub users: Vec<String>,
     pub state_dir: PathBuf,
     pub socket: PathBuf,
@@ -51,6 +53,7 @@ impl Config {
         Ok(Config {
             server: var("ACCEPTREQUEST_SERVER").map(|s| s.trim_end_matches('/').to_owned()),
             token,
+            ca_file: var("ACCEPTREQUEST_CA_FILE").map(PathBuf::from),
             users,
             state_dir: var("ACCEPTREQUEST_STATE_DIR")
                 .unwrap_or_else(|| "/var/lib/acceptrequest".into())
