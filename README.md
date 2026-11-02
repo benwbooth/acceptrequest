@@ -61,17 +61,28 @@ acceptrequest-server gen-cert /var/lib/acceptrequest-tls screentime.lan 192.168.
 acceptrequest-server add-client kids-pc              # prints the token for that machine's tokenFile
 ```
 
-`gen-cert` makes a private CA (`ca.pem`, `ca.key`) and a server certificate signed by it
-(`cert.pem`, `key.pem`) for the names and addresses you list. Running it again reuses the CA.
-Copy `ca.pem` to each computer and set `services.acceptrequest.client.caFile`, and install it on
-your phone once:
+`gen-cert` makes a certificate for the names and addresses you list and prints its fingerprint.
+Computers trust the server by that fingerprint, so there is nothing to install on them:
 
-- **iPhone:** AirDrop or email `ca.pem` to yourself, install the profile in Settings, then turn it on
-  under Settings > General > About > Certificate Trust Settings.
-- **Android:** Settings > Security > Encryption & credentials > Install a certificate > CA certificate.
+```nix
+services.acceptrequest.client.serverFingerprint = "1F:E7:E4:...:3E:6A";
+```
 
-A certificate from Let's Encrypt or `tailscale cert` works too, with no `caFile` needed. A bare
-self-signed certificate (one that is its own CA) is rejected by the client.
+The fingerprint changes each time you run `gen-cert`; the server also logs it at startup, and
+`acceptrequest-server fingerprint cert.pem` prints it.
+
+**Phones are stricter.** Browsers only allow notifications from an HTTPS site they trust, and a
+fingerprint can't be given to a phone browser. With a self-signed certificate the web UI works
+after tapping through the warning, but notifications won't turn on. For notifications without
+installing anything, use a certificate the phone already trusts:
+
+- **Tailscale:** `tailscale cert yourserver.<tailnet>.ts.net`, then point `tls.certFile`/`keyFile` at it.
+- **Your own domain:** Let's Encrypt with a DNS challenge through NixOS `security.acme`; the server
+  doesn't need to be reachable from the internet.
+
+Or install `ca.pem` from the `gen-cert` directory on the phone once (iPhone: install the profile,
+then enable it under Settings > General > About > Certificate Trust Settings; Android: Settings >
+Security > Install a certificate > CA certificate).
 
 ### Notifications
 

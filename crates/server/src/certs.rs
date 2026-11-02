@@ -26,6 +26,17 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// SHA-256 fingerprint of the first certificate in a PEM file, as colon-separated hex.
+pub fn pem_fingerprint(path: &Path) -> Result<String> {
+    use rustls::pki_types::{CertificateDer, pem::PemObject};
+    use sha2::{Digest, Sha256};
+    let cert = CertificateDer::pem_file_iter(path)
+        .with_context(|| format!("reading {}", path.display()))?
+        .next()
+        .context("no certificate in file")??;
+    Ok(Sha256::digest(cert.as_ref()).iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":"))
+}
+
 /// Write `ca.pem`/`ca.key` (kept if they already exist, so clients and phones stay trusted)
 /// and a fresh `cert.pem`/`key.pem` for `names` (DNS names or IP addresses) into `dir`.
 pub fn generate(dir: &Path, names: &[String]) -> Result<()> {
@@ -67,10 +78,14 @@ pub fn generate(dir: &Path, names: &[String]) -> Result<()> {
     std::fs::write(dir.join("cert.pem"), cert.pem())?;
     write_private(&dir.join("key.pem"), &key.serialize_pem())?;
     println!(
-        "Wrote cert.pem and key.pem for {} (valid {SERVER_DAYS} days).\n\
-         Copy ca.pem to each client machine (services.acceptrequest.client.caFile) and install it on your phone.\n\
-         Keep ca.key private; it's only needed to issue the next server certificate.",
-        names.join(", ")
+        "Wrote cert.pem and key.pem for {} (valid {SERVER_DAYS} days).\n\n\
+         Computers can trust this server by its fingerprint, with nothing to install:\n  \
+         services.acceptrequest.client.serverFingerprint = \"{}\";\n\
+         (It changes whenever you run gen-cert again.)\n\n\
+         For phone notifications the phone must trust the certificate: install ca.pem on it,\n\
+         or use a certificate from Let's Encrypt or `tailscale cert` instead.",
+        names.join(", "),
+        pem_fingerprint(&dir.join("cert.pem"))?
     );
     Ok(())
 }

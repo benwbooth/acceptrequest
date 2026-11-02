@@ -12,9 +12,16 @@ pub struct ServerApi {
 }
 
 impl ServerApi {
-    pub fn new(base: String, token: Option<String>, ca_file: Option<&Path>) -> Result<ServerApi> {
+    pub fn new(
+        base: String,
+        token: Option<String>,
+        ca_file: Option<&Path>,
+        fingerprint: Option<[u8; 32]>,
+    ) -> Result<ServerApi> {
         let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(10));
-        if let Some(path) = ca_file {
+        if let Some(pin) = fingerprint {
+            builder = builder.use_preconfigured_tls(crate::pinning::pinned_config(pin));
+        } else if let Some(path) = ca_file {
             let pem = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
             builder = builder.add_root_certificate(reqwest::Certificate::from_pem(&pem)?);
         }

@@ -1,6 +1,7 @@
 mod config;
 mod logind;
 mod parent;
+mod pinning;
 mod server;
 mod state;
 
@@ -68,7 +69,12 @@ async fn main() -> Result<()> {
         .with_context(|| format!("creating {}", config.state_dir.display()))?;
     let state = State::load(&config.state_dir)?;
     let api = match &config.server {
-        Some(base) => Some(ServerApi::new(base.clone(), config.token.clone(), config.ca_file.as_deref())?),
+        Some(base) => Some(ServerApi::new(
+            base.clone(),
+            config.token.clone(),
+            config.ca_file.as_deref(),
+            config.server_fingerprint,
+        )?),
         None => {
             tracing::warn!("no ACCEPTREQUEST_SERVER set, running on cached policy only");
             None

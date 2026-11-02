@@ -24,6 +24,16 @@ in
       default = null;
       description = "File holding this machine's API token for the server.";
     };
+    serverFingerprint = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "1F:E7:E4:02:...:3E:6A";
+      description = ''
+        SHA-256 fingerprint of the server's certificate (printed by `acceptrequest-server gen-cert`,
+        `acceptrequest-server fingerprint`, and at server start). When set, only that certificate is
+        trusted, so a self-signed server works with no CA to install.
+      '';
+    };
     caFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
@@ -89,6 +99,8 @@ in
         ACCEPTREQUEST_TOKEN_FILE = toString cfg.tokenFile;
       } // lib.optionalAttrs (cfg.caFile != null) {
         ACCEPTREQUEST_CA_FILE = toString cfg.caFile;
+      } // lib.optionalAttrs (cfg.serverFingerprint != null) {
+        ACCEPTREQUEST_SERVER_FINGERPRINT = cfg.serverFingerprint;
       };
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/acceptrequest-client";

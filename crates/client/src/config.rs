@@ -8,6 +8,9 @@ pub struct Config {
     pub token: Option<String>,
     /// Extra CA certificate (PEM) to trust for the server, e.g. for a self-signed one.
     pub ca_file: Option<PathBuf>,
+    /// SHA-256 of the server's certificate. When set, only that certificate is accepted,
+    /// which lets a self-signed server work without installing a CA.
+    pub server_fingerprint: Option<[u8; 32]>,
     pub users: Vec<String>,
     pub state_dir: PathBuf,
     pub socket: PathBuf,
@@ -54,6 +57,13 @@ impl Config {
             server: var("ACCEPTREQUEST_SERVER").map(|s| s.trim_end_matches('/').to_owned()),
             token,
             ca_file: var("ACCEPTREQUEST_CA_FILE").map(PathBuf::from),
+            server_fingerprint: match var("ACCEPTREQUEST_SERVER_FINGERPRINT") {
+                Some(f) => Some(
+                    crate::pinning::parse_fingerprint(&f)
+                        .context("ACCEPTREQUEST_SERVER_FINGERPRINT must be a SHA-256 fingerprint")?,
+                ),
+                None => None,
+            },
             users,
             state_dir: var("ACCEPTREQUEST_STATE_DIR")
                 .unwrap_or_else(|| "/var/lib/acceptrequest".into())

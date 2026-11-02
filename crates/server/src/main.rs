@@ -6,6 +6,7 @@ const USAGE: &str = "usage:
   acceptrequest-server [serve]          run the server (configured by ACCEPTREQUEST_* variables)
   acceptrequest-server hash-password    read a password and print its hash for ACCEPTREQUEST_ADMIN_PASSWORD_HASH
   acceptrequest-server gen-cert DIR NAME...  make a private CA and a server certificate for NAME (host names / IPs)
+  acceptrequest-server fingerprint CERT.pem  print a certificate's fingerprint for clients' serverFingerprint
   acceptrequest-server add-client HOST  register a machine and print its token (replaces any old one)
   acceptrequest-server list-clients";
 
@@ -46,6 +47,10 @@ async fn main() -> Result<()> {
             let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
             acceptrequest_server::certs::generate(std::path::Path::new(dir), &names)
         }
+        ["fingerprint", cert] => {
+            println!("{}", acceptrequest_server::certs::pem_fingerprint(std::path::Path::new(cert))?);
+            Ok(())
+        }
         ["list-clients"] => {
             let config = Config::from_env()?;
             let pool = open_db(&config.db_url).await?;
@@ -80,6 +85,10 @@ async fn serve() -> Result<()> {
             let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
                 .await
                 .with_context(|| format!("loading TLS cert {} and key {}", cert.display(), key.display()))?;
+            match acceptrequest_server::certs::pem_fingerprint(&cert) {
+                Ok(f) => tracing::info!("certificate fingerprint (for clients' serverFingerprint): {f}"),
+                Err(e) => tracing::warn!("couldn't fingerprint the certificate: {e:#}"),
+            }
             tracing::info!("listening on https://{addr}");
             axum_server::bind_rustls(addr, tls).serve(app).await?;
         }
