@@ -3,6 +3,8 @@
 Screen time controls for Linux, in the spirit of Windows Family Safety: daily allowances,
 downtime schedules, and kids asking for more time with a notification on your phone.
 
+![Today view on desktop](docs/screenshots/desktop-today.jpg)
+
 ## Pieces
 
 | Crate | What it does |
