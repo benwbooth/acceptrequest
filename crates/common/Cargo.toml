@@ -1,0 +1,10 @@
+[package]
+name = "acceptrequest-common"
+description = "Shared policy, request and API types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "pam_acceptrequest"
+description = "PAM account module that denies login outside allowed screen time"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+acceptrequest-common.workspace = true
