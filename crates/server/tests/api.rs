@@ -213,9 +213,12 @@ async fn no_password_means_no_login() {
 
 /// A stand-in ntfy server: publishing stores a message on a topic, and `/{topic}/json` returns
 /// the stored messages as JSON lines and closes, which the server treats as a reconnect.
+/// (topic, headers, body) for each published message.
+type Published = Vec<(String, Vec<(String, String)>, String)>;
+
 #[derive(Clone, Default)]
 struct FakeNtfy {
-    topics: Arc<Mutex<Vec<(String, Vec<(String, String)>, String)>>>,
+    topics: Arc<Mutex<Published>>,
 }
 
 impl FakeNtfy {
