@@ -8,7 +8,7 @@ use acceptrequest_common::{
     Decision, SocketRequest, SocketResponse, TimeRequest, UsageReport, WARNING_THRESHOLDS,
 };
 use anyhow::Result;
-use chrono::{Local, NaiveDateTime};
+use chrono::{DateTime, Local, NaiveDateTime, TimeDelta, Utc};
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
@@ -48,8 +48,8 @@ pub trait Platform: Send + Sync + 'static {
     /// Check that `admin` may approve time and that `password` is theirs. Blocking.
     fn verify_admin(&self, admin: &str, password: &str) -> Result<(), String>;
     /// Called after every tick so the platform can mirror the rules into the OS itself
-    /// (Windows logon hours). Default: nothing.
-    fn sync_os_restrictions(&self, _user: &str, _state: &State, _now: NaiveDateTime) {}
+    /// (Windows logon hours). `now` is the trusted current time. Default: nothing.
+    fn sync_os_restrictions(&self, _user: &str, _state: &State, _now: DateTime<Utc>) {}
 }
 
 #[derive(Default)]
@@ -61,6 +61,9 @@ struct Tracking {
     /// The smallest warning threshold already shown, reset when time is added.
     last_warning: Option<u32>,
     last_request: Option<Instant>,
+    /// Whether the user was signed in while still allowed at the last tick. The grace period is
+    /// only for time running out mid-session; signing in while already out of time gets none.
+    in_allowed_session: bool,
 }
 
 pub struct Agent<P: Platform> {
@@ -72,7 +75,13 @@ pub struct Agent<P: Platform> {
     warnings: broadcast::Sender<(String, u32)>,
     /// Times of recent wrong "My parent is here" passwords, for the lockout.
     parent_failures: Mutex<Vec<Instant>>,
+    /// How far this machine's clock is behind the server's. Setting the PC's clock back (in
+    /// the BIOS, say) doesn't buy time while the server is reachable.
+    clock_offset: std::sync::Mutex<TimeDelta>,
 }
+
+/// Clock differences smaller than this are network delay and rounding, not tampering.
+const CLOCK_TOLERANCE: TimeDelta = TimeDelta::seconds(90);
 
 /// The smallest warning threshold that `remaining` has reached, if any.
 pub fn warning_bucket(remaining: u32) -> Option<u32> {
@@ -96,6 +105,17 @@ impl<P: Platform> Agent<P> {
             }
         };
         tracing::info!(users = ?config.users, host = %config.host, "acceptrequest client starting");
+        // If the clock is now earlier than the last time we trusted, it was set back.
+        let offset = match state.trusted_time {
+            Some(trusted) if trusted - Utc::now() > CLOCK_TOLERANCE => {
+                tracing::warn!(
+                    seconds = (trusted - Utc::now()).num_seconds(),
+                    "this computer's clock is behind the last time seen; not letting time run backwards"
+                );
+                trusted - Utc::now()
+            }
+            _ => TimeDelta::zero(),
+        };
         Ok(Arc::new(Agent {
             config,
             platform,
@@ -104,7 +124,28 @@ impl<P: Platform> Agent<P> {
             api,
             warnings: broadcast::channel(64).0,
             parent_failures: Mutex::new(Vec::new()),
+            clock_offset: std::sync::Mutex::new(offset),
         }))
+    }
+
+    /// The current time, corrected by the server's clock when it disagrees with this machine's.
+    pub fn now_utc(&self) -> DateTime<Utc> {
+        Utc::now() + *self.clock_offset.lock().unwrap()
+    }
+
+    /// The trusted current time on the local wall clock, which schedules are written in.
+    pub fn now(&self) -> NaiveDateTime {
+        self.now_utc().with_timezone(&Local).naive_local()
+    }
+
+    fn note_server_time(&self, server: DateTime<Utc>) {
+        let offset = server - Utc::now();
+        let offset = if offset.abs() < CLOCK_TOLERANCE { TimeDelta::zero() } else { offset };
+        let mut current = self.clock_offset.lock().unwrap();
+        if (offset - *current).abs() >= CLOCK_TOLERANCE {
+            tracing::warn!(seconds = offset.num_seconds(), "this computer's clock disagrees with the server; using the server's time");
+        }
+        *current = offset;
     }
 
     /// Tick forever and keep syncing with the server in the background.
@@ -124,7 +165,8 @@ impl<P: Platform> Agent<P> {
     }
 
     async fn tick(&self, elapsed: Duration) -> Result<()> {
-        let now = Local::now().naive_local();
+        let now_utc = self.now_utc();
+        let now = now_utc.with_timezone(&Local).naive_local();
         let today = now.date();
         let sessions = self.platform.sessions().await?;
 
@@ -148,13 +190,15 @@ impl<P: Platform> Agent<P> {
                         state.add_minute(user, today);
                     }
                 }
-                self.platform.sync_os_restrictions(user, &state, now);
+                self.platform.sync_os_restrictions(user, &state, now_utc);
                 state.decide(user, now).0
             };
             self.enforce(user, &mine, decision).await;
         }
 
-        self.state.lock().await.save(&self.config.state_dir)
+        let mut state = self.state.lock().await;
+        state.trusted_time = state.trusted_time.max(Some(now_utc));
+        state.save(&self.config.state_dir)
     }
 
     async fn enforce(&self, user: &str, sessions: &[Session], decision: Decision) {
@@ -166,13 +210,24 @@ impl<P: Platform> Agent<P> {
                 if t.denied_since.take().is_some() {
                     tracing::info!(user, "time available again, enforcement lifted");
                 }
+                t.in_allowed_session = !sessions.is_empty();
                 remaining_minutes
             }
             Decision::Denied { reason } => {
                 if sessions.is_empty() {
                     t.denied_since = None;
+                    t.in_allowed_session = false;
                     return;
                 }
+                if t.denied_since.is_none() && !t.in_allowed_session {
+                    // Signed in (or back in) while already out of time: no grace.
+                    tracing::info!(user, %reason, "signed in while out of time, ending sessions");
+                    if let Err(e) = self.platform.end_sessions(user, sessions).await {
+                        tracing::error!(user, "ending sessions failed: {e:#}");
+                    }
+                    return;
+                }
+                t.in_allowed_session = false;
                 let since = *t.denied_since.get_or_insert_with(|| {
                     tracing::info!(user, %reason, "out of time, locking sessions");
                     Instant::now()
@@ -211,15 +266,18 @@ impl<P: Platform> Agent<P> {
         let mut ticker = tokio::time::interval(SYNC);
         loop {
             ticker.tick().await;
-            let today = Local::now().date_naive();
             for user in &self.config.users {
                 match api.policy(user).await {
-                    Ok(p) if &p.username == user => {
+                    Ok((p, server_time)) if &p.username == user => {
+                        if let Some(t) = server_time {
+                            self.note_server_time(t);
+                        }
                         self.state.lock().await.policies.insert(user.clone(), p);
                     }
-                    Ok(p) => tracing::warn!(user, got = %p.username, "server sent policy for wrong user"),
+                    Ok((p, _)) => tracing::warn!(user, got = %p.username, "server sent policy for wrong user"),
                     Err(e) => tracing::warn!(user, "policy fetch failed: {e:#}"),
                 }
+                let today = self.now().date();
                 let report = {
                     let state = self.state.lock().await;
                     UsageReport {
@@ -292,7 +350,7 @@ impl<P: Platform> Agent<P> {
         let Some(username) = self.config.managed_name(username) else {
             return SocketResponse::Unmanaged;
         };
-        let (decision, used_minutes) = self.state.lock().await.decide(username, Local::now().naive_local());
+        let (decision, used_minutes) = self.state.lock().await.decide(username, self.now());
         SocketResponse::Decision { decision, used_minutes }
     }
 
@@ -368,7 +426,7 @@ impl<P: Platform> Agent<P> {
 
         self.parent_failures.lock().await.clear();
         let mut state = self.state.lock().await;
-        state.add_local_grant(&username, Local::now().naive_local(), minutes);
+        state.add_local_grant(&username, self.now(), minutes);
         if let Err(e) = state.save(&self.config.state_dir) {
             tracing::error!("saving state failed: {e:#}");
         }
@@ -386,7 +444,90 @@ async fn write_line<W: AsyncWrite + Unpin>(writer: &mut W, response: &SocketResp
 
 #[cfg(test)]
 mod tests {
-    use super::warning_bucket;
+    use super::*;
+    use acceptrequest_common::DenyReason;
+
+    #[derive(Default)]
+    struct Fake {
+        log: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Platform for Fake {
+        async fn sessions(&self) -> Result<Vec<Session>> {
+            Ok(Vec::new())
+        }
+        async fn lock(&self, s: &Session) -> Result<()> {
+            self.log.lock().unwrap().push(format!("lock {}", s.id));
+            Ok(())
+        }
+        async fn end_sessions(&self, user: &str, _: &[Session]) -> Result<()> {
+            self.log.lock().unwrap().push(format!("end {user}"));
+            Ok(())
+        }
+        fn verify_admin(&self, _: &str, _: &str) -> Result<(), String> {
+            Err("no".into())
+        }
+    }
+
+    fn agent(dir: &std::path::Path, grace: Duration) -> Arc<Agent<Fake>> {
+        let config = Config {
+            server: None,
+            token: None,
+            ca_file: None,
+            server_fingerprint: None,
+            users: vec!["kid".into()],
+            state_dir: dir.into(),
+            socket: dir.join("s"),
+            grace,
+            host: "test".into(),
+            admin_group: "wheel".into(),
+            pam_service: "x".into(),
+            pam_confdir: None,
+        };
+        Agent::new(config, Fake::default()).unwrap()
+    }
+
+    fn session() -> Vec<Session> {
+        vec![Session { id: "1".into(), user: "kid".into(), in_use: true, locked: false }]
+    }
+
+    const OUT: Decision = Decision::Denied { reason: DenyReason::OutOfTime };
+    const OK: Decision = Decision::Allowed { remaining_minutes: Some(30) };
+
+    #[tokio::test]
+    async fn time_running_out_mid_session_locks_then_ends_after_grace() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = agent(dir.path(), Duration::from_millis(50));
+        a.enforce("kid", &session(), OK).await;
+        a.enforce("kid", &session(), OUT).await;
+        assert_eq!(*a.platform.log.lock().unwrap(), ["lock 1"]);
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        a.enforce("kid", &session(), OUT).await;
+        assert_eq!(*a.platform.log.lock().unwrap(), ["lock 1", "lock 1", "end kid"]);
+    }
+
+    #[tokio::test]
+    async fn signing_in_while_out_of_time_gets_no_grace() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = agent(dir.path(), Duration::from_secs(120));
+        a.enforce("kid", &[], OUT).await;
+        a.enforce("kid", &session(), OUT).await;
+        assert_eq!(*a.platform.log.lock().unwrap(), ["end kid"]);
+    }
+
+    #[tokio::test]
+    async fn signing_back_in_after_being_ended_gets_no_grace_either() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = agent(dir.path(), Duration::from_millis(10));
+        a.enforce("kid", &session(), OK).await;
+        a.enforce("kid", &session(), OUT).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        a.enforce("kid", &session(), OUT).await; // grace over: ended
+        a.enforce("kid", &[], OUT).await; // gone
+        a.enforce("kid", &session(), OUT).await; // back again
+        assert_eq!(a.platform.log.lock().unwrap().last().unwrap(), "end kid");
+        assert_eq!(a.platform.log.lock().unwrap().iter().filter(|l| *l == "end kid").count(), 2);
+    }
 
     #[test]
     fn warning_buckets() {

@@ -18,5 +18,18 @@ foreach ($mode in 'Minimal', 'Network') {
   Remove-Item -Force -ErrorAction SilentlyContinue "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\$mode\$name"
 }
 foreach ($u in $users) { net user $u /times:all | Out-Null }
+
+# Give standard users back the right to change the time zone (the Windows default).
+$inf = Join-Path $env:TEMP 'acceptrequest-rights.inf'
+$sdb = Join-Path $env:TEMP 'acceptrequest-rights.sdb'
+secedit /export /cfg $inf /areas USER_RIGHTS | Out-Null
+$rights = foreach ($l in Get-Content $inf) {
+  if ($l -like 'SeTimeZonePrivilege*') { continue }
+  $l
+  if ($l -eq '[Privilege Rights]') { 'SeTimeZonePrivilege = *S-1-5-32-544,*S-1-5-19,*S-1-5-32-545' }
+}
+Set-Content -Path $inf -Value $rights -Encoding Unicode
+secedit /configure /db $sdb /cfg $inf /areas USER_RIGHTS | Out-Null
+Remove-Item -Force $inf, $sdb -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $env:ProgramFiles 'acceptrequest'), $data
 Write-Host "Removed. Sign-in hours reset for: $($users -join ', ')"

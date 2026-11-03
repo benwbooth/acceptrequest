@@ -79,3 +79,19 @@ module) behind a `Platform` implementation:
 - Tamper resistance relies on the kid being a standard user: the service, its files and its data
   directory are writable only by SYSTEM and administrators, it restarts on failure and is
   registered for Safe Mode. A BIOS password is still advised.
+
+### Windows: ways around it, and what stops them
+
+| Attempt | What stops it |
+|---|---|
+| Stop, reconfigure or delete the service | Kid is a standard user; the service's ACL lets signed-in users only query it. It runs as SYSTEM and restarts on failure. |
+| Kill the tray app | Only the warnings go; the service relaunches it within a minute. Enforcement is in the service. |
+| Edit settings, token or usage | `C:\ProgramData\acceptrequest` is readable only by SYSTEM and administrators. |
+| Set the clock back | The server's clock wins whenever it's reachable, and offline the clock can't go back past the last trusted time. Standard users can't change the clock anyway. |
+| Change the time zone | The installer takes that right away from standard users. |
+| Pull the network | The cached schedule keeps applying; with no schedule ever received, sign-in is refused. |
+| Sign back in after being logged off | Windows logon hours refuse it for the rest of the day or downtime; in a partly open hour the service logs them off again at once, with no grace. |
+| Safe Mode | The service is registered to run there, and logon hours still apply. |
+| Remote Desktop into their account | RDP sessions are counted and ended like console ones. |
+| Guest or another unlimited account | The installer disables Guest and warns about any other enabled account without limits, or an admin without a password. |
+| Boot something else (USB stick, Windows installer, recovery console) | Not something software on the PC can stop: set a BIOS/UEFI password, disable USB boot, and turn on BitLocker. |

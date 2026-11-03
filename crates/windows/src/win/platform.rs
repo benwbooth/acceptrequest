@@ -7,7 +7,7 @@ use acceptrequest_client::agent::{Platform, Session};
 use acceptrequest_client::state::State;
 use acceptrequest_common::Decision;
 use anyhow::{Context, Result, anyhow};
-use chrono::{Local, NaiveDateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -112,12 +112,12 @@ impl Platform for Windows {
         verify_admin(admin, password)
     }
 
-    fn sync_os_restrictions(&self, user: &str, state: &State, _now: NaiveDateTime) {
+    fn sync_os_restrictions(&self, user: &str, state: &State, now: DateTime<Utc>) {
         if !self.use_logon_hours || is_admin_account(user) {
             return;
         }
         let map = logon_hours::weekly_map(
-            Utc::now(),
+            now,
             |t| t.with_timezone(&Local).naive_local(),
             |t| matches!(state.decide(user, t).0, Decision::Allowed { .. }),
         );

@@ -70,7 +70,40 @@ foreach ($mode in 'Minimal', 'Network') {
   Set-ItemProperty $key -Name '(default)' -Value 'Service'
 }
 
+# Kids can't stop, reconfigure or delete the service: signed-in users may only query it.
+sc.exe sdset $name 'D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)' | Out-Null
+
+# Changing the time zone would shift downtime, and standard users may normally do it.
+# Leave it to administrators (and LOCAL SERVICE, which Windows needs).
+$inf = Join-Path $env:TEMP 'acceptrequest-rights.inf'
+$sdb = Join-Path $env:TEMP 'acceptrequest-rights.sdb'
+secedit /export /cfg $inf /areas USER_RIGHTS | Out-Null
+$rights = foreach ($l in Get-Content $inf) {
+  if ($l -like 'SeTimeZonePrivilege*') { continue }
+  $l
+  if ($l -eq '[Privilege Rights]') { 'SeTimeZonePrivilege = *S-1-5-32-544,*S-1-5-19' }
+}
+Set-Content -Path $inf -Value $rights -Encoding Unicode
+secedit /configure /db $sdb /cfg $inf /areas USER_RIGHTS | Out-Null
+Remove-Item -Force $inf, $sdb -ErrorAction SilentlyContinue
+
+# Other ways to sign in without limits.
+$guest = Get-LocalUser | Where-Object { $_.SID.Value -like '*-501' }
+if ($guest -and $guest.Enabled) {
+  Disable-LocalUser $guest
+  Write-Host "Disabled the Guest account."
+}
+foreach ($acct in Get-LocalUser | Where-Object { $_.Enabled }) {
+  $isAdmin = $admins -contains $acct.Name
+  if ($isAdmin -and -not $acct.PasswordRequired) {
+    Write-Warning "Administrator '$($acct.Name)' may have no password; anyone could sign in to it."
+  } elseif (-not $isAdmin -and $Users -notcontains $acct.Name) {
+    Write-Warning "'$($acct.Name)' is a standard account without limits; a kid who knows its password could use it."
+  }
+}
+
 Start-Service $name
 Write-Host "Installed. Limited accounts: $($Users -join ', ')."
+Write-Host 'For full protection also set a BIOS/UEFI password, disable booting from USB, and turn on BitLocker.'
 Write-Host "Log: $(Join-Path $data 'service.log')"
 Write-Host "Preview the warning: & '$(Join-Path $bin 'acceptrequest-tray.exe')' --preview"
