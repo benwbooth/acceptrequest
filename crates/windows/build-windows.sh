@@ -12,12 +12,14 @@ nix shell --inputs-from "$root" nixpkgs#pkgsCross.mingwW64.buildPackages.gcc -c 
   RC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-windres \
   cargo build --manifest-path "$root/Cargo.toml" --release --target x86_64-pc-windows-gnu \
     -p acceptrequest-windows --bin acceptrequest-service --bin acceptrequest-tray \
-    -p acceptrequest-client --bin acceptrequest "$@"
+    -p acceptrequest-client --bin acceptrequest \
+    -p acceptrequest-credprov --lib "$@"
 
 # Everything an install needs, in one zip.
 dist="$root/target/windows-dist"
 rm -rf "$dist" && mkdir -p "$dist/acceptrequest-windows"
 cp "$root"/target/x86_64-pc-windows-gnu/release/{acceptrequest,acceptrequest-service,acceptrequest-tray}.exe \
+  "$root"/target/x86_64-pc-windows-gnu/release/acceptrequest_credprov.dll \
   "$root"/crates/windows/{install,uninstall}.ps1 "$dist/acceptrequest-windows/"
 (cd "$dist" && nix shell --inputs-from "$root" nixpkgs#zip -c zip -qr acceptrequest-windows.zip acceptrequest-windows)
 echo "$dist/acceptrequest-windows.zip"

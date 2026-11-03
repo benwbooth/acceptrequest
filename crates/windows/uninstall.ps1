@@ -14,6 +14,8 @@ if (Get-Service $name -ErrorAction SilentlyContinue) {
   sc.exe delete $name | Out-Null
 }
 Get-Process acceptrequest-tray -ErrorAction SilentlyContinue | Stop-Process -Force
+$clsid = '{6f6b7a8e-2d1c-4b8a-9a53-7c0e2f4a91d3}'
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\$clsid", "HKLM:\SOFTWARE\Classes\CLSID\$clsid"
 foreach ($mode in 'Minimal', 'Network') {
   Remove-Item -Force -ErrorAction SilentlyContinue "HKLM:\SYSTEM\CurrentControlSet\Control\SafeBoot\$mode\$name"
 }
@@ -33,3 +35,4 @@ secedit /configure /db $sdb /cfg $inf /areas USER_RIGHTS | Out-Null
 Remove-Item -Force $inf, $sdb -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $env:ProgramFiles 'acceptrequest'), $data
 Write-Host "Removed. Sign-in hours reset for: $($users -join ', ')"
+Write-Host 'If the sign-in screen still had the tile loaded, its DLL is removed after the next restart.'

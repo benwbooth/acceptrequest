@@ -41,9 +41,12 @@ sign-in hours.
   toast in the lower-right corner (click-through, never takes focus), and a tray menu to ask for
   15/30/60 more minutes or for "My parent is here", which opens the Windows credential prompt for
   an administrator account. `acceptrequest-tray.exe --preview` shows the toast.
-- **CLI** (`acceptrequest.exe status|request|parent`) works over the service's named pipe.
-
-Not yet: a "Request more time" button on the sign-in screen itself (a Credential Provider).
+- **Sign-in screen tile** (`acceptrequest_credprov.dll`, a Credential Provider): a "Screen time"
+  tile on the sign-in and lock screens that shows where each limited account stands, lets the kid
+  ask for 15/30/60 more minutes, and lets a parent who is there add time with an administrator
+  account and password. It never signs anyone in, and only appears when the service is running
+  and the computer has limited accounts.
+- **CLI** (`acceptrequest.exe status|users|request|parent`) works over the service's named pipe.
 
 ## Building
 

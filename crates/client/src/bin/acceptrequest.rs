@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 
 const USAGE: &str = "usage:
   acceptrequest status [USER]
+  acceptrequest users                           every limited account on this computer
   acceptrequest request [MINUTES] [REASON...]   ask a parent for more time
   acceptrequest parent USER MINUTES             my parent is here: approve time with an admin password";
 
@@ -59,6 +60,11 @@ fn report(response: SocketResponse) -> Result<()> {
         SocketResponse::RequestQueued => println!("Request saved; it will be sent when the server is reachable."),
         SocketResponse::Granted { minutes } => println!("Added {minutes} minutes."),
         SocketResponse::Warning { remaining_minutes } => println!("{remaining_minutes} minutes left"),
+        SocketResponse::Users { users } => {
+            for u in users {
+                println!("{}: {} minutes used, {:?}", u.username, u.used_minutes, u.decision);
+            }
+        }
         SocketResponse::Error { message } => bail!("{message}"),
     }
     Ok(())
@@ -68,6 +74,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let request = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["status"] => SocketRequest::Status { username: current_user()? },
+        ["users"] => SocketRequest::ListUsers,
         ["status", user] => SocketRequest::Status { username: (*user).to_owned() },
         ["request", rest @ ..] => {
             let (minutes, reason) = match rest.split_first() {

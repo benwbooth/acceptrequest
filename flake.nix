@@ -77,7 +77,7 @@
             buildInputs = [ pkgs.pam ];
             CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
             buildPhase = persistentCargo "acceptrequest"
-              "--release --workspace --exclude acceptrequest-web --exclude acceptrequest-windows";
+              "--release --workspace --exclude acceptrequest-web --exclude acceptrequest-windows --exclude acceptrequest-credprov";
             installPhase = ''
               runHook preInstall
               install -Dm755 -t $out/bin target/release/{acceptrequest,acceptrequest-client,acceptrequest-greeter,acceptrequest-server}

@@ -216,6 +216,15 @@ pub enum SocketRequest {
     Subscribe { username: String },
     /// "My parent is here": an administrator signs in on the spot to add time.
     ParentGrant { username: String, minutes: u32, admin: String, password: String },
+    /// Every limited account and where it stands, for the sign-in screen.
+    ListUsers,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserStatus {
+    pub username: String,
+    pub decision: Decision,
+    pub used_minutes: u32,
 }
 
 /// One JSON line sent back by the client daemon.
@@ -228,6 +237,7 @@ pub enum SocketResponse {
     RequestQueued,
     Warning { remaining_minutes: u32 },
     Granted { minutes: u32 },
+    Users { users: Vec<UserStatus> },
     Error { message: String },
 }
 

@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::server::ServerApi;
 use crate::state::State;
 use acceptrequest_common::{
-    Decision, SocketRequest, SocketResponse, TimeRequest, UsageReport, WARNING_THRESHOLDS,
+    Decision, SocketRequest, SocketResponse, TimeRequest, UsageReport, UserStatus, WARNING_THRESHOLDS,
 };
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDateTime, TimeDelta, Utc};
@@ -390,6 +390,20 @@ impl<P: Platform> Agent<P> {
             }
             SocketRequest::ParentGrant { username, minutes, admin, password } => {
                 self.parent_grant(username, minutes, admin, password).await
+            }
+            SocketRequest::ListUsers => {
+                let now = self.now();
+                let state = self.state.lock().await;
+                let users = self
+                    .config
+                    .users
+                    .iter()
+                    .map(|u| {
+                        let (decision, used_minutes) = state.decide(u, now);
+                        UserStatus { username: u.clone(), decision, used_minutes }
+                    })
+                    .collect();
+                SocketResponse::Users { users }
             }
             SocketRequest::Subscribe { .. } => unreachable!("handled by the connection loop"),
         }

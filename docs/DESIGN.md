@@ -80,6 +80,19 @@ module) behind a `Platform` implementation:
   directory are writable only by SYSTEM and administrators, it restarts on failure and is
   registered for Safe Mode. A BIOS password is still advised.
 
+### Windows sign-in screen tile
+
+`acceptrequest_credprov.dll` is a Credential Provider loaded by LogonUI (as SYSTEM) for the sign-in
+and unlock screens. It shows one extra "Screen time" tile (never the default, never auto-selected)
+and never returns a credential: its submit button reports the result of a "My parent is here"
+grant as a status message. Every entry point catches panics and every pipe call runs on a worker
+thread with a 4-second timeout, so a broken or missing service can't crash or freeze the sign-in
+screen; with no service or no limited accounts the tile simply doesn't appear.
+
+If it ever did stop the sign-in screen working, remove
+`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{6f6b7a8e-2d1c-4b8a-9a53-7c0e2f4a91d3}`
+(from Windows Recovery's command prompt with `reg load`, or remotely as an administrator).
+
 ### Windows: ways around it, and what stops them
 
 | Attempt | What stops it |

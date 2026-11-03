@@ -42,6 +42,9 @@ if (Get-Service $name -ErrorAction SilentlyContinue) {
 
 New-Item -ItemType Directory -Force $bin, $data | Out-Null
 Copy-Item -Force (Join-Path $PSScriptRoot '*.exe') $bin
+# The sign-in screen may hold the old tile DLL open; Windows replaces it after a restart then.
+try { Copy-Item -Force (Join-Path $PSScriptRoot 'acceptrequest_credprov.dll') $bin }
+catch { Move-Item -Force (Join-Path $bin 'acceptrequest_credprov.dll') (Join-Path $bin 'acceptrequest_credprov.old'); Copy-Item -Force (Join-Path $PSScriptRoot 'acceptrequest_credprov.dll') $bin }
 
 # Only SYSTEM and administrators may read the token, settings and usage.
 icacls $data /inheritance:r /grant:r 'SYSTEM:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
@@ -101,6 +104,17 @@ foreach ($acct in Get-LocalUser | Where-Object { $_.Enabled }) {
     Write-Warning "'$($acct.Name)' is a standard account without limits; a kid who knows its password could use it."
   }
 }
+
+# The "Screen time" tile on the sign-in and lock screens (a Credential Provider).
+$clsid = '{6f6b7a8e-2d1c-4b8a-9a53-7c0e2f4a91d3}'
+$server = "HKLM:\SOFTWARE\Classes\CLSID\$clsid"
+New-Item -Force "$server\InprocServer32" | Out-Null
+Set-ItemProperty $server -Name '(default)' -Value 'acceptrequest Screen time tile'
+Set-ItemProperty "$server\InprocServer32" -Name '(default)' -Value (Join-Path $bin 'acceptrequest_credprov.dll')
+Set-ItemProperty "$server\InprocServer32" -Name 'ThreadingModel' -Value 'Apartment'
+$provider = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\$clsid"
+New-Item -Force $provider | Out-Null
+Set-ItemProperty $provider -Name '(default)' -Value 'acceptrequest'
 
 Start-Service $name
 Write-Host "Installed. Limited accounts: $($Users -join ', ')."
