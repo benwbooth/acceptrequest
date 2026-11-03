@@ -34,8 +34,8 @@ impl Config {
             .map(|u| u.trim().to_owned())
             .filter(|u| !u.is_empty())
             .collect();
-        if users.iter().any(|u| u == "root") {
-            bail!("root cannot be a managed user");
+        if users.iter().any(|u| u == "root" || u.eq_ignore_ascii_case("administrator")) {
+            bail!("an administrator account cannot be a managed user");
         }
 
         let token = match var("ACCEPTREQUEST_TOKEN_FILE") {
@@ -65,23 +65,47 @@ impl Config {
                 None => None,
             },
             users,
-            state_dir: var("ACCEPTREQUEST_STATE_DIR")
-                .unwrap_or_else(|| "/var/lib/acceptrequest".into())
-                .into(),
-            socket: var("ACCEPTREQUEST_SOCKET")
-                .unwrap_or_else(|| acceptrequest_common::CLIENT_SOCKET.into())
-                .into(),
+            state_dir: var("ACCEPTREQUEST_STATE_DIR").unwrap_or_else(|| DEFAULT_STATE_DIR.into()).into(),
+            socket: var("ACCEPTREQUEST_SOCKET").unwrap_or_else(|| DEFAULT_SOCKET.into()).into(),
             grace: Duration::from_secs(grace_secs),
-            host: std::fs::read_to_string("/proc/sys/kernel/hostname")
-                .map(|h| h.trim().to_owned())
-                .unwrap_or_else(|_| "unknown".into()),
-            admin_group: var("ACCEPTREQUEST_ADMIN_GROUP").unwrap_or_else(|| "wheel".into()),
+            host: hostname(),
+            admin_group: var("ACCEPTREQUEST_ADMIN_GROUP").unwrap_or_else(|| DEFAULT_ADMIN_GROUP.into()),
             pam_service: var("ACCEPTREQUEST_PAM_SERVICE").unwrap_or_else(|| "acceptrequest".into()),
             pam_confdir: var("ACCEPTREQUEST_PAM_CONFDIR"),
         })
     }
 
+    /// Windows user names are case-insensitive; Linux ones aren't.
     pub fn is_managed(&self, user: &str) -> bool {
-        self.users.iter().any(|u| u == user)
+        self.users.iter().any(|u| if cfg!(windows) { u.eq_ignore_ascii_case(user) } else { u == user })
     }
+
+    /// The configured spelling of `user`, so state is keyed the same however Windows reports it.
+    pub fn managed_name(&self, user: &str) -> Option<&str> {
+        self.users
+            .iter()
+            .find(|u| if cfg!(windows) { u.eq_ignore_ascii_case(user) } else { *u == user })
+            .map(String::as_str)
+    }
+}
+
+#[cfg(unix)]
+const DEFAULT_STATE_DIR: &str = "/var/lib/acceptrequest";
+#[cfg(windows)]
+const DEFAULT_STATE_DIR: &str = r"C:\ProgramData\acceptrequest";
+#[cfg(unix)]
+const DEFAULT_SOCKET: &str = acceptrequest_common::CLIENT_SOCKET;
+#[cfg(windows)]
+const DEFAULT_SOCKET: &str = acceptrequest_common::CLIENT_PIPE;
+#[cfg(unix)]
+const DEFAULT_ADMIN_GROUP: &str = "wheel";
+#[cfg(windows)]
+const DEFAULT_ADMIN_GROUP: &str = "Administrators";
+
+fn hostname() -> String {
+    #[cfg(unix)]
+    let name = std::fs::read_to_string("/proc/sys/kernel/hostname").ok();
+    #[cfg(windows)]
+    let name = std::env::var("COMPUTERNAME").ok();
+    name.map(|h| h.trim().to_owned()).filter(|h| !h.is_empty()).unwrap_or_else(|| "unknown".into())
 }
