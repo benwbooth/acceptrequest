@@ -3,16 +3,27 @@
 use acceptrequest_common::{CLIENT_SOCKET, Decision, SocketRequest, SocketResponse};
 use anyhow::{Context, Result, bail};
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 
 const USAGE: &str = "usage:
   acceptrequest status [USER]
   acceptrequest request [MINUTES] [REASON...]   ask a parent for more time
   acceptrequest parent USER MINUTES             my parent is here: approve time with an admin password";
 
+#[cfg(unix)]
+fn connect(path: &str) -> std::io::Result<std::os::unix::net::UnixStream> {
+    std::os::unix::net::UnixStream::connect(path)
+}
+
+/// On Windows the service listens on a named pipe, which opens like a file.
+#[cfg(windows)]
+fn connect(path: &str) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new().read(true).write(true).open(path)
+}
+
 fn send(request: &SocketRequest) -> Result<SocketResponse> {
-    let socket = std::env::var("ACCEPTREQUEST_SOCKET").unwrap_or_else(|_| CLIENT_SOCKET.into());
-    let mut stream = UnixStream::connect(&socket).with_context(|| format!("connecting to {socket}"))?;
+    let default = if cfg!(windows) { acceptrequest_common::CLIENT_PIPE } else { CLIENT_SOCKET };
+    let socket = std::env::var("ACCEPTREQUEST_SOCKET").unwrap_or_else(|_| default.into());
+    let mut stream = connect(&socket).with_context(|| format!("connecting to {socket}"))?;
     let mut line = serde_json::to_vec(request)?;
     line.push(b'\n');
     stream.write_all(&line)?;
@@ -22,7 +33,7 @@ fn send(request: &SocketRequest) -> Result<SocketResponse> {
 }
 
 fn current_user() -> Result<String> {
-    std::env::var("USER").context("USER is not set")
+    std::env::var(if cfg!(windows) { "USERNAME" } else { "USER" }).context("can't tell who is signed in")
 }
 
 fn prompt(label: &str) -> Result<String> {

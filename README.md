@@ -14,7 +14,36 @@ downtime schedules, and kids asking for more time with a notification on your ph
 | `crates/client` | Root daemon on each machine. Tracks active time through logind, warns at 10/5/1 minutes, locks then terminates sessions, caches policy for offline use. |
 | `crates/pam` | `pam_acceptrequest.so`, an account-phase module that blocks login outside allowed time by asking the local daemon. |
 | `crates/greeter` | greetd greeter with a "Request more time" button. |
+| `crates/windows` | Windows client: a service (same agent as Linux) and a tray app with the warning toast. |
 | `crates/common` | Shared types. |
+
+## Windows
+
+Build the installer zip from Linux with `crates/windows/build-windows.sh` (MinGW from nixpkgs);
+it lands in `target/windows-dist/acceptrequest-windows.zip`. On the PC, unzip it and run from an
+administrator PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1 `
+  -Server https://benwbooth-nixos.duckdns.org:8443 -Token <token> -Users chloe
+```
+
+Get the token from the web UI (Computers > Add) or `acceptrequest-server add-client <hostname>`.
+The kid's account must be a standard user. `uninstall.ps1` removes everything and resets their
+sign-in hours.
+
+- **Service** (`acceptrequest-service.exe`, runs as SYSTEM, also in Safe Mode): counts time while
+  the kid's session is unlocked, warns at 10/5/1 minutes, then disconnects the session to the
+  sign-in screen and logs it off after the grace period. It writes the schedule into the account's
+  **Windows logon hours**, so Windows itself refuses sign-in during downtime or once the day's time
+  is used, even if the service isn't running.
+- **Tray app** (`acceptrequest-tray.exe`, started in the kid's session by the service): the warning
+  toast in the lower-right corner (click-through, never takes focus), and a tray menu to ask for
+  15/30/60 more minutes or for "My parent is here", which opens the Windows credential prompt for
+  an administrator account. `acceptrequest-tray.exe --preview` shows the toast.
+- **CLI** (`acceptrequest.exe status|request|parent`) works over the service's named pipe.
+
+Not yet: a "Request more time" button on the sign-in screen itself (a Credential Provider).
 
 ## Building
 

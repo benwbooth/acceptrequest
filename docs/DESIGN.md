@@ -58,3 +58,24 @@ When a parent is physically present they can add time without the phone or the s
   the check is refused. Attempts are counted before the password is checked, so firing many guesses
   at once doesn't get around the limit.
 - Grants are logged with the parent's name and reported to the server with the usage figures.
+
+## Windows
+
+The Windows service runs the same agent as the Linux daemon (`acceptrequest-client`'s `agent`
+module) behind a `Platform` implementation:
+
+- Sessions come from WTS (`WTSEnumerateSessionsW`); a session counts as in use when it is
+  connected and unlocked (`WTSSessionInfoEx`).
+- Locking is `WTSDisconnectSession` (a service can't call `LockWorkStation` for another session);
+  ending is `WTSLogoffSession`.
+- Windows logon hours (`NetUserSetInfo` level 1020) mirror the schedule for the next week, at hour
+  granularity: an hour is open if any quarter of it is allowed. This is the fail-safe: sign-in is
+  refused by Windows even if the service is stopped. The service refuses to touch administrator
+  accounts.
+- "My parent is here" uses `LogonUserW` and checks the token for BUILTIN\Administrators (present,
+  deny-only, even in a UAC-filtered token), so a local or Microsoft-account administrator works.
+- The named pipe `\\.\pipe\acceptrequest` speaks the same JSON lines as the Unix socket and is
+  open to signed-in users only.
+- Tamper resistance relies on the kid being a standard user: the service, its files and its data
+  directory are writable only by SYSTEM and administrators, it restarts on failure and is
+  registered for Safe Mode. A BIOS password is still advised.
