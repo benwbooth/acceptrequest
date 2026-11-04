@@ -123,6 +123,7 @@ impl State {
                 daily_allowance_minutes: Some(0),
                 bonus_minutes: local,
                 downtime: Vec::new(),
+                locked: false,
             }),
         };
         let override_until = self.local_grants.get(user).and_then(|g| g.override_until);

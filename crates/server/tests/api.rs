@@ -485,3 +485,37 @@ async fn computers_report_accounts_and_parents_assign_them() {
     let ryan = overview["users"].as_array().unwrap().iter().find(|u| u["username"] == "ryan").unwrap();
     assert_eq!(ryan["name"], "Ryan");
 }
+
+#[tokio::test]
+async fn parents_can_lock_and_take_time_away() {
+    let s = server(with_password()).await;
+    let pc1 = db::add_client(&s.state.db, "Ryan-PC").await.unwrap();
+    let pc2 = db::add_client(&s.state.db, "Chloe-PC").await.unwrap();
+    let cookie = s.admin_cookie().await;
+    let me = Some(cookie.as_str());
+    s.call("POST", "/api/users", me, Some(json!({"username": "ryan"}))).await;
+    s.call("PUT", "/api/users/ryan/allowances", me, Some(json!([60, 60, 60, 60, 60, 60, 60]))).await;
+
+    // Take 45 minutes away from a 60-minute day, then 30 more: it bottoms out at nothing.
+    assert_eq!(s.call("POST", "/api/users/ryan/bonus", me, Some(json!({"minutes": -45}))).await.0, StatusCode::NO_CONTENT);
+    let p = s.policy(&pc1, "ryan").await;
+    assert_eq!((p.daily_allowance_minutes, p.bonus_minutes), (Some(15), 0));
+    s.call("POST", "/api/users/ryan/bonus", me, Some(json!({"minutes": -30}))).await;
+    assert_eq!(s.policy(&pc1, "ryan").await.daily_allowance_minutes, Some(0));
+    assert_eq!(s.call("POST", "/api/users/ryan/bonus", me, Some(json!({"minutes": -2000}))).await.0, StatusCode::BAD_REQUEST);
+
+    // Lock one computer, then all of them; unlocking all clears both.
+    let lock = |computer: Option<&str>, locked: bool| json!({"computer": computer, "locked": locked});
+    assert_eq!(s.call("PUT", "/api/users/ryan/lock", me, Some(lock(Some("Ryan-PC"), true))).await.0, StatusCode::NO_CONTENT);
+    assert!(s.policy(&pc1, "ryan").await.locked);
+    assert!(!s.policy(&pc2, "ryan").await.locked);
+    assert_eq!(s.call("PUT", "/api/users/ryan/lock", me, Some(lock(Some("Nope-PC"), true))).await.0, StatusCode::NOT_FOUND);
+    s.call("PUT", "/api/users/ryan/lock", me, Some(lock(None, true))).await;
+    assert!(s.policy(&pc2, "ryan").await.locked);
+    let (_, _, body) = s.call("GET", "/api/overview", me, None).await;
+    let overview: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(overview["users"][0]["locks"], json!(["*", "Ryan-PC"]));
+    assert_eq!(overview["users"][0]["decision"], json!({"decision": "denied", "reason": {"kind": "locked"}}));
+    s.call("PUT", "/api/users/ryan/lock", me, Some(lock(None, false))).await;
+    assert!(!s.policy(&pc1, "ryan").await.locked && !s.policy(&pc2, "ryan").await.locked);
+}

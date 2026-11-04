@@ -89,6 +89,9 @@ pub struct Policy {
     pub daily_allowance_minutes: Option<u32>,
     pub bonus_minutes: u32,
     pub downtime: Vec<DowntimeWindow>,
+    /// A parent has locked this kid out of this computer (or all of them) until they unlock it.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +100,7 @@ pub enum DenyReason {
     Downtime { until: NaiveDateTime },
     OutOfTime,
     NoPolicy,
+    Locked,
 }
 
 impl std::fmt::Display for DenyReason {
@@ -107,6 +111,7 @@ impl std::fmt::Display for DenyReason {
             }
             DenyReason::OutOfTime => write!(f, "Screen time is used up for today."),
             DenyReason::NoPolicy => write!(f, "Screen time settings have not been received yet."),
+            DenyReason::Locked => write!(f, "A parent has locked this computer for now."),
         }
     }
 }
@@ -125,6 +130,9 @@ pub fn evaluate(policy: Option<&Policy>, now: NaiveDateTime, used_minutes: u32) 
     let Some(policy) = policy else {
         return Decision::Denied { reason: DenyReason::NoPolicy };
     };
+    if policy.locked {
+        return Decision::Denied { reason: DenyReason::Locked };
+    }
     if let Some(until) = policy.downtime.iter().filter_map(|w| w.active_until(now)).max() {
         return Decision::Denied { reason: DenyReason::Downtime { until } };
     }
@@ -298,6 +306,7 @@ mod tests {
                 start: t("21:00"),
                 end: t("07:00"),
             }],
+            locked: false,
         }
     }
 
@@ -395,6 +404,24 @@ mod tests {
             apply_override(evaluate(Some(&p), now, 0), now, Some(at("2026-11-02", "21:15"))),
             Decision::Allowed { remaining_minutes: Some(30) }
         );
+    }
+
+    #[test]
+    fn a_lock_beats_everything_but_a_parent_at_the_computer() {
+        let mut p = policy();
+        p.locked = true;
+        let now = at("2026-11-02", "12:00");
+        assert_eq!(evaluate(Some(&p), now, 0), Decision::Denied { reason: DenyReason::Locked });
+        assert!(matches!(
+            apply_override(evaluate(Some(&p), now, 0), now, Some(at("2026-11-02", "12:30"))),
+            Decision::Allowed { .. }
+        ));
+        // Older servers don't send the field: not locked.
+        let old: Policy = serde_json::from_str(
+            r#"{"username":"kid","day":"2026-11-02","daily_allowance_minutes":60,"bonus_minutes":0,"downtime":[]}"#,
+        )
+        .unwrap();
+        assert!(!old.locked);
     }
 
     #[test]

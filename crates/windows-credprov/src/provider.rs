@@ -111,6 +111,7 @@ fn describe(u: &UserStatus) -> String {
         }
         Decision::Denied { reason: DenyReason::OutOfTime } => format!("{}: out of screen time for today", u.username),
         Decision::Denied { reason: DenyReason::NoPolicy } => format!("{}: waiting for settings", u.username),
+        Decision::Denied { reason: DenyReason::Locked } => format!("{}: locked by a parent", u.username),
     }
 }
 

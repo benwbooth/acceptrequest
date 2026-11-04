@@ -154,3 +154,7 @@ label { font-weight: 600; font-size: 0.9rem; }
 .badge { background: var(--accent); color: var(--accent-text); font-size: 0.7rem; border-radius: 6px; padding: 1px 6px; }
 .name-input { font: inherit; font-weight: 700; font-size: 1.05rem; border: 1px solid transparent; background: transparent; padding: 6px 8px; border-radius: 8px; min-height: 0; flex: 1; }
 .name-input:hover, .name-input:focus { border-color: var(--line); background: var(--surface-2); }
+
+.label.spaced { margin-top: 14px; }
+.chip.minus { color: var(--warn); }
+.chip.lock.active { background: var(--off); color: #fff; border-color: var(--off); }

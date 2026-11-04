@@ -180,6 +180,7 @@ fn status(user: &UserOverview, today: chrono::NaiveDate) -> (String, &'static st
         }
         Decision::Denied { reason: DenyReason::OutOfTime } => ("Time's up for today".into(), "off"),
         Decision::Denied { reason: DenyReason::NoPolicy } => ("Not set up".into(), "off"),
+        Decision::Denied { reason: DenyReason::Locked } => ("Locked".into(), "off"),
     }
 }
 
@@ -308,7 +309,15 @@ fn Shell() -> impl IntoView {
 
 /// 15/30/45/60/custom minute buttons, plus "No" when answering a request.
 #[component]
-fn MinutePicker(on_pick: Callback<u32>, #[prop(optional)] with_no: bool, #[prop(optional)] highlight: Option<u32>) -> impl IntoView {
+fn MinutePicker(
+    on_pick: Callback<u32>,
+    #[prop(optional)] with_no: bool,
+    #[prop(optional)] highlight: Option<u32>,
+    /// Show the amounts as time taken away (−15) instead of added.
+    #[prop(optional)]
+    minus: bool,
+) -> impl IntoView {
+    let sign = if minus { "\u{2212}" } else { "+" };
     let custom_open = RwSignal::new(false);
     let custom = RwSignal::new(String::new());
     let submit_custom = move |ev: leptos::ev::SubmitEvent| {
@@ -325,8 +334,8 @@ fn MinutePicker(on_pick: Callback<u32>, #[prop(optional)] with_no: bool, #[prop(
         <div class="picker">
             {with_no.then(|| view! { <button class="chip no" on:click=move |_| on_pick.run(0)>"No"</button> })}
             {PRESETS.into_iter().map(|m| view! {
-                <button class="chip" class:suggested=highlight == Some(m) on:click=move |_| on_pick.run(m)>
-                    {format!("+{m}")}
+                <button class="chip" class:minus=minus class:suggested=highlight == Some(m) on:click=move |_| on_pick.run(m)>
+                    {format!("{sign}{m}")}
                 </button>
             }).collect_view()}
             <button class="chip" class:active=move || custom_open.get()
@@ -336,7 +345,7 @@ fn MinutePicker(on_pick: Callback<u32>, #[prop(optional)] with_no: bool, #[prop(
             <form class="custom" on:submit=submit_custom>
                 <input type="number" min="1" max="1440" inputmode="numeric" placeholder="Minutes" required
                     prop:value=move || custom.get() on:input=move |ev| custom.set(event_target_value(&ev))/>
-                <button class="primary">"Add"</button>
+                <button class="primary">{if minus { "Take" } else { "Add" }}</button>
             </form>
         </Show>
     }
@@ -412,10 +421,23 @@ fn KidCard(u: UserOverview, today: chrono::NaiveDate) -> impl IntoView {
     let ctx = ctx();
     let (headline, tone) = status(&u, today);
     let (username, shown) = (u.username.clone(), u.name.clone());
-    let pick = Callback::new(move |m: u32| {
+    let adjust = {
         let (username, shown) = (username.clone(), shown.clone());
-        ctx.act(format!("Added {m} minutes for {shown}"), async move { api::add_bonus(&username, m).await })
-    });
+        move |minutes: i64| {
+            let (username, shown) = (username.clone(), shown.clone());
+            let done = if minutes > 0 {
+                format!("Added {minutes} minutes for {shown}")
+            } else {
+                format!("Took {} minutes from {shown}", -minutes)
+            };
+            ctx.act(done, async move { api::add_bonus(&username, minutes).await })
+        }
+    };
+    let add = {
+        let adjust = adjust.clone();
+        Callback::new(move |m: u32| adjust(m as i64))
+    };
+    let take = Callback::new(move |m: u32| adjust(-(m as i64)));
     let limit = u.allowances[today.format("%u").to_string().parse::<usize>().unwrap_or(1) - 1];
     let local: u32 = u.usage_today.iter().map(|h| h.local_bonus_minutes).sum();
     let details = [
@@ -424,9 +446,24 @@ fn KidCard(u: UserOverview, today: chrono::NaiveDate) -> impl IntoView {
             Some(l) => format!("Limit {}", fmt_minutes(l)),
             None => "No daily limit".into(),
         }),
-        (u.bonus_today > 0).then(|| format!("+{} bonus", fmt_minutes(u.bonus_today))),
+        (u.bonus_today > 0).then(|| format!("+{} added", fmt_minutes(u.bonus_today as u32))),
+        (u.bonus_today < 0).then(|| format!("\u{2212}{} taken away", fmt_minutes((-u.bonus_today) as u32))),
         (local > 0).then(|| format!("+{} added at the computer", fmt_minutes(local))),
+        (!u.locks.is_empty() && !u.locks.iter().any(|l| l == "*")).then(|| format!("Locked on {}", u.locks.join(", "))),
     ];
+    let locked_all = u.locks.iter().any(|l| l == "*");
+    let locked_on = u.locks.clone();
+    let computers = move || ctx.overview.with(|o| o.as_ref().map(|o| o.clients.clone()).unwrap_or_default());
+    let lock = {
+        let (username, shown) = (username.clone(), shown.clone());
+        move |computer: Option<String>, locked: bool| {
+            let (username, shown) = (username.clone(), shown.clone());
+            let where_ = computer.clone().unwrap_or_else(|| "all computers".into());
+            let done = if locked { format!("Locked {shown} on {where_}") } else { format!("Unlocked {shown} on {where_}") };
+            ctx.act(done, async move { api::set_lock(&username, computer.as_deref(), locked).await })
+        }
+    };
+    let lock_all = lock.clone();
     view! {
         <article class="card kid">
             <div class="kid-head">
@@ -438,7 +475,31 @@ fn KidCard(u: UserOverview, today: chrono::NaiveDate) -> impl IntoView {
             </div>
             <ul class="facts">{details.into_iter().flatten().map(|d| view! { <li>{d}</li> }).collect_view()}</ul>
             <div class="label">"Add time"</div>
-            <MinutePicker on_pick=pick/>
+            <MinutePicker on_pick=add/>
+            <div class="label spaced">"Take time away"</div>
+            <MinutePicker on_pick=take minus=true/>
+            <div class="label spaced">"Lock"</div>
+            <div class="picker">
+                <button class="chip lock" class:active=locked_all
+                    on:click=move |_| lock_all(None, !locked_all)>
+                    {if locked_all { "Unlock all" } else { "Lock all computers" }}
+                </button>
+                {move || (!locked_all).then(|| {
+                    let lock = lock.clone();
+                    let locked_on = locked_on.clone();
+                    computers().into_iter().map(move |c| {
+                        let on = locked_on.iter().any(|l| l.eq_ignore_ascii_case(&c.hostname));
+                        let lock = lock.clone();
+                        let host = c.hostname.clone();
+                        view! {
+                            <button class="chip lock" class:active=on aria-pressed=on.to_string()
+                                on:click=move |_| lock(Some(host.clone()), !on)>
+                                {format!("{}{}", if on { "\u{1F512} " } else { "" }, c.hostname)}
+                            </button>
+                        }
+                    }).collect_view()
+                })}
+            </div>
         </article>
     }
 }

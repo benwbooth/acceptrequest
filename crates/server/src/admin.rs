@@ -30,6 +30,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/users/{username}/allowances", put(set_allowances))
         .route("/api/users/{username}/downtime", put(set_downtime))
         .route("/api/users/{username}/bonus", post(add_bonus))
+        .route("/api/users/{username}/lock", put(set_lock))
         .route("/api/requests", get(requests))
         .route("/api/requests/{id}/resolve", post(resolve_request))
         .route("/api/clients", get(clients).post(add_client))
@@ -139,7 +140,10 @@ pub struct UserOverview {
     /// Monday first. `null` means no limit that day.
     pub allowances: Allowances,
     pub downtime: Vec<DowntimeWindow>,
-    pub bonus_today: u32,
+    /// Time added (positive) or taken away (negative) today.
+    pub bonus_today: i64,
+    /// '*' when locked on every computer, otherwise the hostnames it's locked on.
+    pub locks: Vec<String>,
     pub usage_today: Vec<HostUsage>,
     pub used_today: u32,
     /// Where things stand across all machines, ignoring on-the-spot grants made at a machine.
@@ -156,7 +160,8 @@ async fn user_overview(s: &AppState, id: i64, username: String, today: NaiveDate
         decision: evaluate(Some(&policy), Local::now().naive_local(), 0),
         allowances: db::allowances(&s.db, id).await?,
         downtime: policy.downtime,
-        bonus_today: policy.bonus_minutes,
+        bonus_today: db::bonus(&s.db, id, today).await?,
+        locks: db::locks(&s.db, id).await?,
         usage_today,
         used_today,
         username,
@@ -240,18 +245,48 @@ struct Minutes {
     minutes: u32,
 }
 
+#[derive(Deserialize)]
+struct Adjustment {
+    /// Positive adds time, negative takes it away.
+    minutes: i64,
+}
+
 async fn add_bonus(
     State(s): State<AppState>,
     _: Admin,
     Path(username): Path<String>,
-    Json(body): Json<Minutes>,
+    Json(body): Json<Adjustment>,
 ) -> AppResult<StatusCode> {
-    if body.minutes == 0 || body.minutes > 24 * 60 {
+    if body.minutes == 0 || body.minutes.abs() > 24 * 60 {
         return Err(AppError::BadRequest("between 1 minute and 24 hours".into()));
     }
     let id = find_user(&s, &username).await?;
     db::add_bonus(&s.db, id, Local::now().date_naive(), body.minutes, "web").await?;
-    tracing::info!(user = %username, minutes = body.minutes, "bonus added from web");
+    tracing::info!(user = %username, minutes = body.minutes, "time adjusted from web");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct LockBody {
+    /// A computer's hostname, or None for all computers.
+    computer: Option<String>,
+    locked: bool,
+}
+
+async fn set_lock(
+    State(s): State<AppState>,
+    _: Admin,
+    Path(username): Path<String>,
+    Json(body): Json<LockBody>,
+) -> AppResult<StatusCode> {
+    let id = find_user(&s, &username).await?;
+    let host = match &body.computer {
+        Some(h) if db::list_clients(&s.db).await?.iter().any(|c| c.hostname.eq_ignore_ascii_case(h)) => h.clone(),
+        Some(_) => return Err(AppError::NotFound),
+        None => "*".to_owned(),
+    };
+    db::set_lock(&s.db, id, &host, body.locked).await?;
+    tracing::info!(user = %username, computer = %host, locked = body.locked, "lock changed from web");
     Ok(StatusCode::NO_CONTENT)
 }
 

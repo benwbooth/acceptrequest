@@ -20,7 +20,9 @@ pub struct UserOverview {
     pub name: String,
     pub allowances: Allowances,
     pub downtime: Vec<DowntimeWindow>,
-    pub bonus_today: u32,
+    pub bonus_today: i64,
+    #[serde(default)]
+    pub locks: Vec<String>,
     pub usage_today: Vec<HostUsage>,
     pub used_today: u32,
     pub decision: Decision,
@@ -143,7 +145,8 @@ pub async fn add_user(username: &str) -> ApiResult<()> {
     send("POST", "/api/users", &serde_json::json!({ "username": username })).await.map(drop)
 }
 
-pub async fn add_bonus(username: &str, minutes: u32) -> ApiResult<()> {
+/// Positive adds time for today, negative takes it away.
+pub async fn add_bonus(username: &str, minutes: i64) -> ApiResult<()> {
     send("POST", &format!("/api/users/{username}/bonus"), &serde_json::json!({ "minutes": minutes })).await.map(drop)
 }
 
@@ -165,6 +168,13 @@ pub async fn add_client(hostname: &str) -> ApiResult<NewClientToken> {
 
 pub async fn set_account(hostname: &str, account: &str, kid: Option<&str>) -> ApiResult<()> {
     send("PUT", &format!("/api/clients/{hostname}/accounts/{account}"), &serde_json::json!({ "kid": kid })).await.map(drop)
+}
+
+/// Lock or unlock a kid on one computer, or on all of them with `None`.
+pub async fn set_lock(username: &str, computer: Option<&str>, locked: bool) -> ApiResult<()> {
+    send("PUT", &format!("/api/users/{username}/lock"), &serde_json::json!({ "computer": computer, "locked": locked }))
+        .await
+        .map(drop)
 }
 
 pub async fn set_name(username: &str, name: &str) -> ApiResult<()> {

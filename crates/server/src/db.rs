@@ -117,18 +117,17 @@ pub async fn set_downtime(db: &SqlitePool, user: i64, windows: &[DowntimeWindow]
     Ok(())
 }
 
-pub async fn bonus(db: &SqlitePool, user: i64, day: NaiveDate) -> Result<u32> {
-    let total: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(minutes), 0) FROM bonus_grants WHERE user_id = ? AND day = ?",
-    )
-    .bind(user)
-    .bind(day)
-    .fetch_one(db)
-    .await?;
-    Ok(total.max(0) as u32)
+/// The day's time adjustments: time added, minus time taken away. Can be negative.
+pub async fn bonus(db: &SqlitePool, user: i64, day: NaiveDate) -> Result<i64> {
+    Ok(sqlx::query_scalar("SELECT COALESCE(SUM(minutes), 0) FROM bonus_grants WHERE user_id = ? AND day = ?")
+        .bind(user)
+        .bind(day)
+        .fetch_one(db)
+        .await?)
 }
 
-pub async fn add_bonus(db: &SqlitePool, user: i64, day: NaiveDate, minutes: u32, source: &str) -> Result<()> {
+/// Add (positive) or take away (negative) time for the day.
+pub async fn add_bonus(db: &SqlitePool, user: i64, day: NaiveDate, minutes: i64, source: &str) -> Result<()> {
     sqlx::query("INSERT INTO bonus_grants (user_id, day, minutes, source, granted_at) VALUES (?, ?, ?, ?, ?)")
         .bind(user)
         .bind(day)
@@ -193,8 +192,14 @@ pub async fn policy_for(db: &SqlitePool, user: i64, username: &str, host: &str, 
         .sum();
     let bonus = bonus(db, user, today).await?;
     let (allowance, bonus) = match allowance {
-        Some(a) => (Some(a.saturating_sub(used_elsewhere)), bonus.saturating_sub(used_elsewhere.saturating_sub(a))),
-        None => (None, bonus),
+        // Time taken away comes off the day's limit; it can't go below nothing.
+        Some(a) if bonus < 0 => (Some((a as i64 + bonus - used_elsewhere as i64).max(0) as u32), 0),
+        Some(a) => {
+            let bonus = bonus as u32;
+            (Some(a.saturating_sub(used_elsewhere)), bonus.saturating_sub(used_elsewhere.saturating_sub(a)))
+        }
+        // No daily limit: adjustments don't matter.
+        None => (None, bonus.max(0) as u32),
     };
     Ok(Policy {
         username: username.to_owned(),
@@ -202,7 +207,41 @@ pub async fn policy_for(db: &SqlitePool, user: i64, username: &str, host: &str, 
         daily_allowance_minutes: allowance,
         bonus_minutes: bonus,
         downtime: downtime(db, user).await?,
+        locked: is_locked(db, user, host).await?,
     })
+}
+
+/// Whether the kid is locked out of `host` (an empty host asks about the all-computers lock only).
+pub async fn is_locked(db: &SqlitePool, user: i64, host: &str) -> Result<bool> {
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM locks WHERE user_id = ? AND (host = '*' OR host = ?)")
+        .bind(user)
+        .bind(host)
+        .fetch_one(db)
+        .await?;
+    Ok(n > 0)
+}
+
+/// The kid's locks: '*' for all computers, otherwise hostnames.
+pub async fn locks(db: &SqlitePool, user: i64) -> Result<Vec<String>> {
+    Ok(sqlx::query_scalar("SELECT host FROM locks WHERE user_id = ? ORDER BY host").bind(user).fetch_all(db).await?)
+}
+
+/// Lock or unlock a kid on one computer, or on all of them with host '*'. Unlocking all also
+/// clears the per-computer locks.
+pub async fn set_lock(db: &SqlitePool, user: i64, host: &str, locked: bool) -> Result<()> {
+    if locked {
+        sqlx::query("INSERT OR IGNORE INTO locks (user_id, host, created_at) VALUES (?, ?, ?)")
+            .bind(user)
+            .bind(host)
+            .bind(now())
+            .execute(db)
+            .await?;
+    } else if host == "*" {
+        sqlx::query("DELETE FROM locks WHERE user_id = ?").bind(user).execute(db).await?;
+    } else {
+        sqlx::query("DELETE FROM locks WHERE user_id = ? AND host = ?").bind(user).bind(host).execute(db).await?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, sqlx::FromRow)]
