@@ -18,6 +18,10 @@ mod service {
 
     pub const NAME: &str = "acceptrequest";
 
+    /// Poked by the service control handler on sign-ins, unlocks and reconnects, so an
+    /// out-of-time sign-in is caught at once rather than at the next 15-second tick.
+    static SESSION_CHANGED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
     /// Read `config.env` (KEY=VALUE lines) from the data directory into the environment, so the
     /// shared `Config::from_env` works the same as on Linux.
     fn load_config_file() -> Result<()> {
@@ -62,6 +66,13 @@ mod service {
         runtime.block_on(async move {
             let agent = Agent::new(config, platform)?;
             tokio::spawn(pipe::serve(agent.clone(), pipe_name));
+            let poked = agent.clone();
+            tokio::spawn(async move {
+                loop {
+                    SESSION_CHANGED.notified().await;
+                    poked.wake();
+                }
+            });
             tokio::select! {
                 _ = agent.run() => {}
                 _ = stop => tracing::info!("stopping"),
@@ -89,6 +100,10 @@ mod service {
                 }
                 ServiceControlHandlerResult::NoError
             }
+            ServiceControl::SessionChange(_) => {
+                SESSION_CHANGED.notify_one();
+                ServiceControlHandlerResult::NoError
+            }
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
             _ => ServiceControlHandlerResult::NotImplemented,
         })?;
@@ -101,7 +116,10 @@ mod service {
             wait_hint: Duration::default(),
             process_id: None,
         };
-        handle.set_service_status(status(ServiceState::Running, ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN))?;
+        handle.set_service_status(status(
+            ServiceState::Running,
+            ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN | ServiceControlAccept::SESSION_CHANGE,
+        ))?;
         let result = run_agent(stop_rx);
         if let Err(e) = &result {
             tracing::error!("{e:#}");

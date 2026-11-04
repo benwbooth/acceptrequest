@@ -84,13 +84,14 @@ impl Windows {
 
 impl Platform for Windows {
     async fn sessions(&self) -> Result<Vec<Session>> {
-        let sessions = list_sessions()?;
-        for s in &sessions {
-            if s.in_use && self.is_managed(&s.user) {
-                self.ensure_tray(s.id.parse().unwrap_or(0));
-            }
+        list_sessions()
+    }
+
+    fn on_allowed_session(&self, session: &Session) {
+        // Only into sessions that are staying: starting it in one being shut out crashed it.
+        if self.is_managed(&session.user) {
+            self.ensure_tray(session.id.parse().unwrap_or(0));
         }
-        Ok(sessions)
     }
 
     async fn lock(&self, session: &Session) -> Result<()> {

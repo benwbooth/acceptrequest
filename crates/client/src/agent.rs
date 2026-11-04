@@ -47,6 +47,9 @@ pub trait Platform: Send + Sync + 'static {
     fn end_sessions(&self, user: &str, sessions: &[Session]) -> impl Future<Output = Result<()>> + Send;
     /// Check that `admin` may approve time and that `password` is theirs. Blocking.
     fn verify_admin(&self, admin: &str, password: &str) -> Result<(), String>;
+    /// Called each tick for a session whose user is allowed to be on, e.g. to make sure the
+    /// warning app is running in it. Default: nothing.
+    fn on_allowed_session(&self, _session: &Session) {}
     /// Called after every tick so the platform can mirror the rules into the OS itself
     /// (Windows logon hours). `now` is the trusted current time. Default: nothing.
     fn sync_os_restrictions(&self, _user: &str, _state: &State, _now: DateTime<Utc>) {}
@@ -81,10 +84,15 @@ pub struct Agent<P: Platform> {
     /// Set once the first sync with the server has been attempted. Nothing is enforced before
     /// then, so a fresh install or restart never acts on a missing or stale schedule.
     synced_once: std::sync::atomic::AtomicBool,
+    /// Ticks early when poked, e.g. by Windows the moment someone signs in.
+    wake: tokio::sync::Notify,
     /// How far this machine's clock is behind the server's. Setting the PC's clock back (in
     /// the BIOS, say) doesn't buy time while the server is reachable.
     clock_offset: std::sync::Mutex<TimeDelta>,
 }
+
+/// After an out-of-time sign-in is sent back to the sign-in screen, how long until it's ended.
+const FRESH_SIGN_IN_GRACE: Duration = Duration::from_secs(10);
 
 /// Clock differences smaller than this are network delay and rounding, not tampering.
 const CLOCK_TOLERANCE: TimeDelta = TimeDelta::seconds(90);
@@ -132,8 +140,14 @@ impl<P: Platform> Agent<P> {
             warnings: broadcast::channel(64).0,
             parent_failures: Mutex::new(Vec::new()),
             synced_once: std::sync::atomic::AtomicBool::new(config_has_no_server),
+            wake: tokio::sync::Notify::new(),
             clock_offset: std::sync::Mutex::new(offset),
         }))
+    }
+
+    /// Check sessions now instead of at the next regular tick.
+    pub fn wake(&self) {
+        self.wake.notify_one();
     }
 
     /// The current time, corrected by the server's clock when it disagrees with this machine's.
@@ -163,7 +177,10 @@ impl<P: Platform> Agent<P> {
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last = Instant::now();
         loop {
-            ticker.tick().await;
+            tokio::select! {
+                _ = ticker.tick() => {}
+                _ = self.wake.notified() => {}
+            }
             let elapsed = last.elapsed();
             last = Instant::now();
             if let Err(e) = self.tick(elapsed).await {
@@ -225,6 +242,9 @@ impl<P: Platform> Agent<P> {
                     tracing::info!(user, "time available again, enforcement lifted");
                 }
                 t.in_allowed_session = !sessions.is_empty();
+                for s in sessions.iter().filter(|s| s.in_use) {
+                    self.platform.on_allowed_session(s);
+                }
                 remaining_minutes
             }
             // Without any schedule yet, new sign-ins are refused (PAM, logon hours), but nobody
@@ -236,11 +256,22 @@ impl<P: Platform> Agent<P> {
                     t.in_allowed_session = false;
                     return;
                 }
-                if t.denied_since.is_none() && !t.in_allowed_session {
-                    // Signed in (or back in) while already out of time: no grace.
+                if !t.in_allowed_session && t.denied_since.is_none_or(|at| at.elapsed() >= FRESH_SIGN_IN_GRACE) {
+                    // Signed in (or back in) while already out of time: straight back to the
+                    // sign-in screen, and signed out moments later; no grace for using it.
                     tracing::info!(user, %reason, "signed in while out of time, ending sessions");
-                    if let Err(e) = self.platform.end_sessions(user, sessions).await {
-                        tracing::error!(user, "ending sessions failed: {e:#}");
+                    for s in sessions.iter().filter(|s| !s.locked) {
+                        if let Err(e) = self.platform.lock(s).await {
+                            tracing::warn!(user, session = %s.id, "lock failed: {e:#}");
+                        }
+                    }
+                    if t.denied_since.is_some() {
+                        if let Err(e) = self.platform.end_sessions(user, sessions).await {
+                            tracing::error!(user, "ending sessions failed: {e:#}");
+                        }
+                        t.denied_since = None;
+                    } else {
+                        t.denied_since = Some(Instant::now());
                     }
                     return;
                 }
@@ -565,7 +596,13 @@ mod tests {
         let a = agent(dir.path(), Duration::from_secs(120));
         a.enforce("kid", &[], OUT).await;
         a.enforce("kid", &session(), OUT).await;
-        assert_eq!(*a.platform.log.lock().unwrap(), ["end kid"]);
+        // Straight back to the sign-in screen...
+        assert_eq!(*a.platform.log.lock().unwrap(), ["lock 1"]);
+        // ...and ended at the next tick after a short pause, not the 2-minute grace.
+        a.tracking.lock().await.get_mut("kid").unwrap().denied_since =
+            Some(Instant::now() - FRESH_SIGN_IN_GRACE);
+        a.enforce("kid", &session(), OUT).await;
+        assert_eq!(*a.platform.log.lock().unwrap(), ["lock 1", "lock 1", "end kid"]);
     }
 
     #[tokio::test]
@@ -577,9 +614,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         a.enforce("kid", &session(), OUT).await; // grace over: ended
         a.enforce("kid", &[], OUT).await; // gone
-        a.enforce("kid", &session(), OUT).await; // back again
-        assert_eq!(a.platform.log.lock().unwrap().last().unwrap(), "end kid");
-        assert_eq!(a.platform.log.lock().unwrap().iter().filter(|l| *l == "end kid").count(), 2);
+        a.enforce("kid", &session(), OUT).await; // back again: sent straight back
+        assert_eq!(a.platform.log.lock().unwrap().last().unwrap(), "lock 1");
+        assert_eq!(a.platform.log.lock().unwrap().iter().filter(|l| *l == "end kid").count(), 1);
     }
 
     #[test]
