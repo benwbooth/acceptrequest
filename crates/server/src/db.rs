@@ -316,13 +316,126 @@ pub async fn add_client(db: &SqlitePool, hostname: &str) -> Result<String> {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, sqlx::FromRow)]
+pub struct AccountRow {
+    pub name: String,
+    pub admin: bool,
+    /// The kid's username, or None for not limited.
+    pub kid: Option<String>,
+    /// Reported but never assigned by a parent.
+    pub new: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ClientRow {
     pub hostname: String,
     pub last_seen: Option<String>,
+    pub accounts: Vec<AccountRow>,
 }
 
 pub async fn list_clients(db: &SqlitePool) -> Result<Vec<ClientRow>> {
-    Ok(sqlx::query_as("SELECT hostname, last_seen FROM clients ORDER BY hostname").fetch_all(db).await?)
+    let rows: Vec<(i64, String, Option<String>)> =
+        sqlx::query_as("SELECT id, hostname, last_seen FROM clients ORDER BY hostname").fetch_all(db).await?;
+    let mut out = Vec::new();
+    for (id, hostname, last_seen) in rows {
+        let accounts = sqlx::query_as(
+            "SELECT a.name, a.is_admin AS admin, u.username AS kid, (a.decided = 0 AND a.is_admin = 0) AS new
+             FROM accounts a LEFT JOIN users u ON u.id = a.user_id
+             WHERE a.client_id = ? ORDER BY a.is_admin, a.name",
+        )
+        .bind(id)
+        .fetch_all(db)
+        .await?;
+        out.push(ClientRow { hostname, last_seen, accounts });
+    }
+    Ok(out)
+}
+
+/// Record the accounts a computer reports (dropping ones it no longer has) and return which of
+/// them are limited, and as which kid.
+pub async fn report_accounts(
+    db: &SqlitePool,
+    client: i64,
+    accounts: &[screentime_common::LocalAccount],
+    default_minutes: u32,
+) -> Result<Vec<screentime_common::AccountMapping>> {
+    let now = now();
+    for a in accounts {
+        let existed: Option<i64> = sqlx::query_scalar("SELECT id FROM accounts WHERE client_id = ? AND name = ?")
+            .bind(client)
+            .bind(&a.name)
+            .fetch_optional(db)
+            .await?;
+        match existed {
+            Some(id) => {
+                sqlx::query("UPDATE accounts SET is_admin = ?, last_seen = ? WHERE id = ?")
+                    .bind(a.admin)
+                    .bind(&now)
+                    .bind(id)
+                    .execute(db)
+                    .await?;
+            }
+            None => {
+                // The first time an account shows up, keep what the computer was set up with.
+                let kid = match (&a.configured_kid, a.admin) {
+                    (Some(kid), false) => Some(ensure_user(db, kid, default_minutes).await?),
+                    _ => None,
+                };
+                sqlx::query(
+                    "INSERT INTO accounts (client_id, name, is_admin, user_id, decided, first_seen, last_seen)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(client)
+                .bind(&a.name)
+                .bind(a.admin)
+                .bind(kid)
+                .bind(kid.is_some())
+                .bind(&now)
+                .bind(&now)
+                .execute(db)
+                .await?;
+            }
+        }
+    }
+    let rows: Vec<(i64, String)> = sqlx::query_as("SELECT id, name FROM accounts WHERE client_id = ?")
+        .bind(client)
+        .fetch_all(db)
+        .await?;
+    for (id, name) in rows {
+        if !accounts.iter().any(|a| a.name.eq_ignore_ascii_case(&name)) {
+            sqlx::query("DELETE FROM accounts WHERE id = ?").bind(id).execute(db).await?;
+        }
+    }
+    let limited: Vec<(String, String)> = sqlx::query_as(
+        "SELECT a.name, u.username FROM accounts a JOIN users u ON u.id = a.user_id
+         WHERE a.client_id = ? AND a.is_admin = 0 ORDER BY a.name",
+    )
+    .bind(client)
+    .fetch_all(db)
+    .await?;
+    Ok(limited.into_iter().map(|(account, kid)| screentime_common::AccountMapping { account, kid }).collect())
+}
+
+/// Assign a computer's account to a kid (by username), or to nobody.
+pub async fn set_account(db: &SqlitePool, hostname: &str, account: &str, kid: Option<i64>) -> Result<bool> {
+    let r = sqlx::query(
+        "UPDATE accounts SET user_id = ?, decided = 1
+         WHERE name = ? AND is_admin = 0 AND client_id = (SELECT id FROM clients WHERE hostname = ?)",
+    )
+    .bind(kid)
+    .bind(account)
+    .bind(hostname)
+    .execute(db)
+    .await?;
+    Ok(r.rows_affected() > 0)
+}
+
+pub async fn set_display_name(db: &SqlitePool, user: i64, name: Option<&str>) -> Result<()> {
+    sqlx::query("UPDATE users SET display_name = ? WHERE id = ?").bind(name).bind(user).execute(db).await?;
+    Ok(())
+}
+
+pub async fn display_name(db: &SqlitePool, user: i64) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar("SELECT display_name FROM users WHERE id = ?").bind(user).fetch_one(db).await?)
 }
 
 pub async fn remove_client(db: &SqlitePool, hostname: &str) -> Result<bool> {

@@ -17,6 +17,7 @@ pub struct HostUsage {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct UserOverview {
     pub username: String,
+    pub name: String,
     pub allowances: Allowances,
     pub downtime: Vec<DowntimeWindow>,
     pub bonus_today: u32,
@@ -38,9 +39,19 @@ pub struct RequestRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct AccountRow {
+    pub name: String,
+    pub admin: bool,
+    pub kid: Option<String>,
+    pub new: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ClientRow {
     pub hostname: String,
     pub last_seen: Option<String>,
+    #[serde(default)]
+    pub accounts: Vec<AccountRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -150,6 +161,14 @@ pub async fn resolve_request(id: i64, minutes: u32) -> ApiResult<()> {
 
 pub async fn add_client(hostname: &str) -> ApiResult<NewClientToken> {
     json(send("POST", "/api/clients", &serde_json::json!({ "hostname": hostname })).await?).await
+}
+
+pub async fn set_account(hostname: &str, account: &str, kid: Option<&str>) -> ApiResult<()> {
+    send("PUT", &format!("/api/clients/{hostname}/accounts/{account}"), &serde_json::json!({ "kid": kid })).await.map(drop)
+}
+
+pub async fn set_name(username: &str, name: &str) -> ApiResult<()> {
+    send("PUT", &format!("/api/users/{username}/name"), &serde_json::json!({ "name": name })).await.map(drop)
 }
 
 pub async fn remove_client(hostname: &str) -> ApiResult<()> {

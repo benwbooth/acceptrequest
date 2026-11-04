@@ -132,6 +132,21 @@ pub fn group_members(group: &str) -> Vec<String> {
     members
 }
 
+/// Accounts people sign in to: regular UIDs with a real login shell.
+pub fn human_accounts() -> Vec<String> {
+    let Ok(passwd) = std::fs::read_to_string("/etc/passwd") else { return Vec::new() };
+    passwd
+        .lines()
+        .filter_map(|line| {
+            let f: Vec<&str> = line.split(':').collect();
+            let uid: u32 = f.get(2)?.parse().ok()?;
+            let shell = f.get(6)?;
+            ((1000..60000).contains(&uid) && !shell.ends_with("nologin") && !shell.ends_with("false"))
+                .then(|| f[0].to_owned())
+        })
+        .collect()
+}
+
 /// Whether `user` belongs to `group`, as a primary or supplementary group.
 pub fn in_group(user: &str, group: &str) -> bool {
     let (Ok(user_c), Ok(group_c)) = (CString::new(user), CString::new(group)) else {

@@ -32,6 +32,9 @@ pub struct State {
     pub local_grants: HashMap<String, LocalGrant>,
     /// The latest trusted time seen. Time never runs backwards past it, so setting the clock
     /// back while offline doesn't reopen used-up time or downtime.
+    /// Which local accounts are limited as which kid, as last received from the server.
+    #[serde(default)]
+    pub account_map: Option<Vec<screentime_common::AccountMapping>>,
     /// The administrator who last approved time here, offered first next time.
     #[serde(default)]
     pub last_admin: Option<String>,

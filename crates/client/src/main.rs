@@ -47,6 +47,18 @@ mod linux {
             self.logind.terminate_user(uid).await
         }
 
+        fn local_accounts(&self) -> Vec<screentime_common::LocalAccount> {
+            let admins = parent::group_members(&self.admin_group);
+            parent::human_accounts()
+                .into_iter()
+                .map(|name| screentime_common::LocalAccount {
+                    admin: admins.contains(&name),
+                    name,
+                    configured_kid: None,
+                })
+                .collect()
+        }
+
         fn admins(&self) -> Vec<String> {
             parent::group_members(&self.admin_group).into_iter().filter(|u| u != "root").collect()
         }

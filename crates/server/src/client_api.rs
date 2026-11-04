@@ -3,7 +3,7 @@
 use crate::auth::Client;
 use crate::error::{AppError, AppResult};
 use crate::{AppState, db};
-use screentime_common::{Policy, TimeRequest, UsageReport};
+use screentime_common::{AccountsReply, AccountsReport, Policy, TimeRequest, UsageReport};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -15,6 +15,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/client/policy/{username}", get(policy))
         .route("/api/client/usage", post(usage))
         .route("/api/client/requests", post(request_time))
+        .route("/api/client/accounts", post(accounts))
 }
 
 /// Linux user names: a lowercase letter or underscore, then up to 31 of `[a-z0-9_-]`.
@@ -76,4 +77,25 @@ mod tests {
         assert!(!valid_username("1kid"));
         assert!(!valid_username(&"a".repeat(33)));
     }
+}
+
+/// The computer reports its local accounts; the reply says which are limited and as which kid.
+async fn accounts(
+    State(s): State<AppState>,
+    client: Client,
+    Json(report): Json<AccountsReport>,
+) -> AppResult<Json<AccountsReply>> {
+    if report.accounts.len() > 500 {
+        return Err(AppError::BadRequest("too many accounts".into()));
+    }
+    for a in &report.accounts {
+        if a.name.is_empty() || a.name.len() > 256 {
+            return Err(AppError::BadRequest("invalid account name".into()));
+        }
+        if let Some(kid) = &a.configured_kid {
+            check_username(kid)?;
+        }
+    }
+    let limited = db::report_accounts(&s.db, client.id, &report.accounts, s.config.default_allowance_minutes).await?;
+    Ok(Json(AccountsReply { limited }))
 }

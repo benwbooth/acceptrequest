@@ -266,6 +266,11 @@ fn Login() -> impl IntoView {
 fn Shell() -> impl IntoView {
     let ctx = ctx();
     let pending = move || ctx.overview.with(|o| o.as_ref().map_or(0, |o| o.pending_requests.len()));
+    let new_accounts = move || {
+        ctx.overview.with(|o| {
+            o.as_ref().map_or(0, |o| o.clients.iter().flat_map(|c| &c.accounts).filter(|a| a.new).count())
+        })
+    };
     let nav = move || {
         Tab::ALL
             .into_iter()
@@ -276,6 +281,7 @@ fn Shell() -> impl IntoView {
                         <svg viewBox="0 0 24 24" aria-hidden="true"><path d=t.icon()/></svg>
                         <span>{t.label()}</span>
                         {move || (t == Tab::Today && pending() > 0).then(|| view! { <b class="dot">{pending()}</b> })}
+                        {move || (t == Tab::Machines && new_accounts() > 0).then(|| view! { <b class="dot">{new_accounts()}</b> })}
                     </button>
                 }
             })
@@ -368,10 +374,17 @@ fn TodayView() -> impl IntoView {
     }
 }
 
+fn kid_name(ctx: Ctx, username: &str) -> String {
+    ctx.overview
+        .with_untracked(|o| o.as_ref().and_then(|o| o.users.iter().find(|u| u.username == username).map(|u| u.name.clone())))
+        .unwrap_or_else(|| username.to_owned())
+}
+
 #[component]
 fn RequestCard(r: RequestRow) -> impl IntoView {
     let ctx = ctx();
-    let (id, name) = (r.id, r.username.clone());
+    let (id, name) = (r.id, kid_name(ctx, &r.username));
+    let shown = name.clone();
     let asked = match r.requested_minutes {
         Some(m) => format!("wants {} more", fmt_minutes(m as u32)),
         None => "wants more time".to_owned(),
@@ -384,7 +397,7 @@ fn RequestCard(r: RequestRow) -> impl IntoView {
         <article class="card request">
             <div class="request-head">
                 <div>
-                    <strong>{r.username.clone()}</strong>" "{asked}
+                    <strong>{shown}</strong>" "{asked}
                     <div class="muted small">{format!("on {} · {}", r.host, local_time(&r.created_at))}</div>
                 </div>
             </div>
@@ -398,10 +411,10 @@ fn RequestCard(r: RequestRow) -> impl IntoView {
 fn KidCard(u: UserOverview, today: chrono::NaiveDate) -> impl IntoView {
     let ctx = ctx();
     let (headline, tone) = status(&u, today);
-    let name = u.username.clone();
+    let (username, shown) = (u.username.clone(), u.name.clone());
     let pick = Callback::new(move |m: u32| {
-        let name = name.clone();
-        ctx.act(format!("Added {m} minutes for {name}"), async move { api::add_bonus(&name, m).await })
+        let (username, shown) = (username.clone(), shown.clone());
+        ctx.act(format!("Added {m} minutes for {shown}"), async move { api::add_bonus(&username, m).await })
     });
     let limit = u.allowances[today.format("%u").to_string().parse::<usize>().unwrap_or(1) - 1];
     let local: u32 = u.usage_today.iter().map(|h| h.local_bonus_minutes).sum();
@@ -417,9 +430,9 @@ fn KidCard(u: UserOverview, today: chrono::NaiveDate) -> impl IntoView {
     view! {
         <article class="card kid">
             <div class="kid-head">
-                <span class="avatar">{u.username.chars().next().unwrap_or('?').to_uppercase().to_string()}</span>
+                <span class="avatar">{u.name.chars().next().unwrap_or('?').to_uppercase().to_string()}</span>
                 <div>
-                    <strong>{u.username.clone()}</strong>
+                    <strong>{u.name.clone()}</strong>
                     <div class=format!("status {tone}")>{headline}</div>
                 </div>
             </div>
@@ -526,8 +539,14 @@ fn ScheduleEditor(u: UserOverview) -> impl IntoView {
     view! {
         <article class="card schedule">
             <div class="kid-head">
-                <span class="avatar">{name.chars().next().unwrap_or('?').to_uppercase().to_string()}</span>
-                <strong>{name.clone()}</strong>
+                <span class="avatar">{u.name.chars().next().unwrap_or('?').to_uppercase().to_string()}</span>
+                <input class="name-input" aria-label="Name" prop:value=u.name.clone() on:change={
+                    let username = name.clone();
+                    move |ev| {
+                        let (username, shown) = (username.clone(), event_target_value(&ev));
+                        ctx.act(format!("Renamed to {shown}"), async move { api::set_name(&username, &shown).await });
+                    }
+                }/>
             </div>
             <h3>"Daily limit"</h3>
             <div class="limits">{limit_rows}</div>
@@ -600,6 +619,49 @@ fn DowntimeRow(index: usize, w: DowntimeWindow, downtime: RwSignal<Vec<DowntimeW
     }
 }
 
+/// One local account on a computer, with who it counts as.
+#[component]
+fn AccountRowView(host: String, a: api::AccountRow) -> impl IntoView {
+    let ctx = ctx();
+    let kids = move || ctx.overview.with(|o| o.as_ref().map(|o| o.users.clone()).unwrap_or_default());
+    if a.admin {
+        return view! {
+            <div class="account">
+                <span class="account-name">{a.name.clone()}</span>
+                <span class="muted small">"Administrator · never limited"</span>
+            </div>
+        }
+        .into_any();
+    }
+    let current = a.kid.clone().unwrap_or_default();
+    let account = a.name.clone();
+    let change = move |ev: leptos::ev::Event| {
+        let value = event_target_value(&ev);
+        let (host, account) = (host.clone(), account.clone());
+        let kid = (!value.is_empty()).then_some(value);
+        let done = match &kid {
+            Some(k) => format!("{account} now uses {}'s time", kid_name(ctx, k)),
+            None => format!("{account} is not limited"),
+        };
+        ctx.act(done, async move { api::set_account(&host, &account, kid.as_deref()).await });
+    };
+    view! {
+        <div class="account">
+            <span class="account-name">{a.name.clone()}
+                {a.new.then(|| view! { <b class="badge">"New"</b> })}
+            </span>
+            <select aria-label=format!("Who uses {}", a.name) on:change=change>
+                <option value="" selected=current.is_empty()>"Not limited"</option>
+                {move || kids().into_iter().map(|k| {
+                    let selected = k.username == current;
+                    view! { <option value=k.username.clone() selected=selected>{k.name.clone()}</option> }
+                }).collect_view()}
+            </select>
+        </div>
+    }
+    .into_any()
+}
+
 #[component]
 fn MachinesView() -> impl IntoView {
     let ctx = ctx();
@@ -631,18 +693,25 @@ fn MachinesView() -> impl IntoView {
                 <For each=clients key=|c| format!("{c:?}") let:c>
                     {
                         let host = c.hostname.clone();
+                        let accounts = c.accounts.clone();
+                        let host_for_accounts = c.hostname.clone();
                         view! {
-                            <div class="list-row">
-                                <div>
-                                    <strong>{c.hostname.clone()}</strong>
-                                    <div class="muted small">{c.last_seen.as_deref().map(|t| format!("Last check-in {}", local_date_time(t))).unwrap_or_else(|| "Never checked in".into())}</div>
+                            <div class="computer">
+                                <div class="list-row">
+                                    <div>
+                                        <strong>{c.hostname.clone()}</strong>
+                                        <div class="muted small">{c.last_seen.as_deref().map(|t| format!("Last check-in {}", local_date_time(t))).unwrap_or_else(|| "Never checked in".into())}</div>
+                                    </div>
+                                    <button class="ghost danger" on:click=move |_| {
+                                        let host = host.clone();
+                                        if confirm_action(&format!("Remove {host}? It will stop getting schedules until you add it again.")) {
+                                            ctx.act(format!("Removed {host}"), async move { api::remove_client(&host).await });
+                                        }
+                                    }>"Remove"</button>
                                 </div>
-                                <button class="ghost danger" on:click=move |_| {
-                                    let host = host.clone();
-                                    if confirm_action(&format!("Remove {host}? It will stop getting schedules until you add it again.")) {
-                                        ctx.act(format!("Removed {host}"), async move { api::remove_client(&host).await });
-                                    }
-                                }>"Remove"</button>
+                                <div class="accounts">
+                                    {accounts.into_iter().map(|a| view! { <AccountRowView host=host_for_accounts.clone() a=a/> }).collect_view()}
+                                </div>
                             </div>
                         }
                     }

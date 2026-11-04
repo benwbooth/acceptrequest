@@ -1,6 +1,6 @@
 //! HTTP client for the screentime server's client API.
 
-use screentime_common::{Policy, TimeRequest, UsageReport};
+use screentime_common::{AccountsReply, AccountsReport, Policy, TimeRequest, UsageReport};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::Path;
@@ -48,6 +48,12 @@ impl ServerApi {
             .and_then(|d| DateTime::parse_from_rfc2822(d).ok())
             .map(|d| d.with_timezone(&Utc));
         Ok((resp.json().await.context("decoding policy")?, server_time))
+    }
+
+    pub async fn accounts(&self, report: &AccountsReport) -> Result<AccountsReply> {
+        let url = format!("{}/api/client/accounts", self.base);
+        let resp = self.auth(self.http.post(&url)).json(report).send().await?.error_for_status()?;
+        resp.json().await.context("decoding account mapping")
     }
 
     pub async fn report_usage(&self, report: &UsageReport) -> Result<()> {

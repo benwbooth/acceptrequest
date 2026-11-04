@@ -5,6 +5,7 @@ use super::{from_wide, pcwstr, wide};
 use crate::logon_hours;
 use screentime_client::agent::{Platform, Session};
 use screentime_client::state::State;
+use screentime_common::LocalAccount;
 use screentime_common::Decision;
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Local, Utc};
@@ -13,7 +14,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::NetworkManagement::NetManagement::{
-    LOCALGROUP_MEMBERS_INFO_2, NetApiBufferFree, NetLocalGroupGetMembers, NetUserGetInfo, NetUserSetInfo,
+    FILTER_NORMAL_ACCOUNT, LOCALGROUP_MEMBERS_INFO_2, NetApiBufferFree, NetLocalGroupGetMembers, NetUserEnum,
+    NetUserGetInfo, NetUserSetInfo,
     UF_ACCOUNTDISABLE, USER_INFO_1, USER_INFO_24, USER_INFO_1020, USER_PRIV_ADMIN,
 };
 use windows::Win32::Security::{
@@ -42,7 +44,6 @@ const TRAY_EXE: &str = "screentime-tray.exe";
 const TRAY_RETRY: Duration = Duration::from_secs(60);
 
 pub struct Windows {
-    users: Vec<String>,
     /// Mirror the schedule into Windows logon hours (on unless SCREENTIME_LOGON_HOURS=off).
     use_logon_hours: bool,
     /// Last logon-hours map written for each user, so Windows is only told about changes.
@@ -51,6 +52,7 @@ pub struct Windows {
 }
 
 impl Windows {
+    /// `users` are the configured accounts, only checked here so a misconfigured admin is reported.
     pub fn new(users: Vec<String>) -> Windows {
         for user in &users {
             if is_admin_account(user) {
@@ -61,11 +63,7 @@ impl Windows {
         if !use_logon_hours {
             tracing::warn!("logon hours are off: sign-in is only blocked while the service is running");
         }
-        Windows { users, use_logon_hours, logon_hours: Mutex::default(), tray_started: Mutex::default() }
-    }
-
-    fn is_managed(&self, user: &str) -> bool {
-        self.users.iter().any(|u| u.eq_ignore_ascii_case(user))
+        Windows { use_logon_hours, logon_hours: Mutex::default(), tray_started: Mutex::default() }
     }
 
     fn ensure_tray(&self, session_id: u32) {
@@ -91,8 +89,20 @@ impl Platform for Windows {
 
     fn on_allowed_session(&self, session: &Session) {
         // Only into sessions that are staying: starting it in one being shut out crashed it.
-        if self.is_managed(&session.user) {
-            self.ensure_tray(session.id.parse().unwrap_or(0));
+        self.ensure_tray(session.id.parse().unwrap_or(0));
+    }
+
+    fn local_accounts(&self) -> Vec<LocalAccount> {
+        local_accounts()
+    }
+
+    fn release_user(&self, user: &str) {
+        self.logon_hours.lock().unwrap().remove(user);
+        if self.use_logon_hours && !is_admin_account(user) {
+            match set_logon_hours(user, [0xff; logon_hours::BYTES]) {
+                Ok(()) => tracing::info!(user, "sign-in hours reset to any time"),
+                Err(e) => tracing::error!(user, "resetting sign-in hours failed: {e:#}"),
+            }
         }
     }
 
@@ -184,6 +194,27 @@ fn list_sessions() -> Result<Vec<Session>> {
     }
     unsafe { WTSFreeMemory(info as _) };
     Ok(out)
+}
+
+/// Enabled local user accounts, and whether each is an administrator.
+pub fn local_accounts() -> Vec<LocalAccount> {
+    let mut buf: *mut u8 = std::ptr::null_mut();
+    let (mut read, mut total) = (0u32, 0u32);
+    let rc = unsafe { NetUserEnum(None, 1, FILTER_NORMAL_ACCOUNT, &mut buf, u32::MAX, &mut read, &mut total, None) };
+    if rc != 0 || buf.is_null() {
+        return Vec::new();
+    }
+    let users = unsafe { std::slice::from_raw_parts(buf as *const USER_INFO_1, read as usize) };
+    let out = users
+        .iter()
+        .filter(|u| u.usri1_flags & UF_ACCOUNTDISABLE != UF_ACCOUNTDISABLE)
+        .filter_map(|u| {
+            let name = unsafe { u.usri1_name.to_string() }.ok()?;
+            Some(LocalAccount { name, admin: u.usri1_priv == USER_PRIV_ADMIN, configured_kid: None })
+        })
+        .collect();
+    unsafe { NetApiBufferFree(Some(buf as _)) };
+    out
 }
 
 /// Enabled local user accounts in BUILTIN\Administrators (looked up by SID, so it works

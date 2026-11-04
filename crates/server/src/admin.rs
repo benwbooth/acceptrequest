@@ -34,6 +34,8 @@ pub fn routes() -> Router<AppState> {
         .route("/api/requests/{id}/resolve", post(resolve_request))
         .route("/api/clients", get(clients).post(add_client))
         .route("/api/clients/{hostname}", delete(remove_client))
+        .route("/api/clients/{hostname}/accounts/{account}", put(set_account))
+        .route("/api/users/{username}/name", put(set_name))
         .route("/api/push", get(push_info))
         .route("/api/push/subscribe", post(push_subscribe))
         .route("/api/push/unsubscribe", post(push_unsubscribe))
@@ -132,6 +134,8 @@ async fn logout(State(s): State<AppState>, headers: HeaderMap) -> AppResult<Resp
 #[derive(Serialize)]
 pub struct UserOverview {
     pub username: String,
+    /// What to call them in the UI; the username if no name was set.
+    pub name: String,
     /// Monday first. `null` means no limit that day.
     pub allowances: Allowances,
     pub downtime: Vec<DowntimeWindow>,
@@ -148,6 +152,7 @@ async fn user_overview(s: &AppState, id: i64, username: String, today: NaiveDate
     // An empty host means every machine's usage counts against the allowance.
     let policy = db::policy_for(&s.db, id, &username, "", today).await?;
     Ok(UserOverview {
+        name: db::display_name(&s.db, id).await?.unwrap_or_else(|| username.clone()),
         decision: evaluate(Some(&policy), Local::now().naive_local(), 0),
         allowances: db::allowances(&s.db, id).await?,
         downtime: policy.downtime,
@@ -349,4 +354,46 @@ async fn push_test(State(s): State<AppState>, _: Admin) -> AppResult<Json<Delive
         actions: Vec::new(),
     };
     Ok(Json(Delivered { delivered: s.notifier.send_push(&s.db, &payload).await? }))
+}
+
+#[derive(Deserialize)]
+struct AccountKid {
+    kid: Option<String>,
+}
+
+async fn set_account(
+    State(s): State<AppState>,
+    _: Admin,
+    Path((hostname, account)): Path<(String, String)>,
+    Json(body): Json<AccountKid>,
+) -> AppResult<StatusCode> {
+    let kid = match &body.kid {
+        Some(k) => Some(find_user(&s, k).await?),
+        None => None,
+    };
+    if db::set_account(&s.db, &hostname, &account, kid).await? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(AppError::NotFound)
+    }
+}
+
+#[derive(Deserialize)]
+struct DisplayName {
+    name: String,
+}
+
+async fn set_name(
+    State(s): State<AppState>,
+    _: Admin,
+    Path(username): Path<String>,
+    Json(body): Json<DisplayName>,
+) -> AppResult<StatusCode> {
+    let id = find_user(&s, &username).await?;
+    let name = body.name.trim();
+    if name.chars().count() > 60 {
+        return Err(AppError::BadRequest("at most 60 characters".into()));
+    }
+    db::set_display_name(&s.db, id, (!name.is_empty()).then_some(name)).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

@@ -5,7 +5,8 @@ use crate::config::Config;
 use crate::server::ServerApi;
 use crate::state::State;
 use screentime_common::{
-    Decision, DenyReason, SocketRequest, SocketResponse, TimeRequest, UsageReport, UserStatus, WARNING_THRESHOLDS,
+    AccountMapping, AccountsReport, Decision, DenyReason, LocalAccount, SocketRequest, SocketResponse, TimeRequest,
+    UsageReport, UserStatus, WARNING_THRESHOLDS,
 };
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDateTime, TimeDelta, Utc};
@@ -38,8 +39,38 @@ pub struct Session {
     pub locked: bool,
 }
 
+/// Which local accounts are limited, and the kid (server username) each one counts against.
+#[derive(Debug, Clone, Default)]
+struct Managed {
+    users: Vec<String>,
+    server_names: HashMap<String, String>,
+}
+
+impl Managed {
+    fn from_mappings(mappings: &[AccountMapping]) -> Managed {
+        Managed {
+            users: mappings.iter().map(|m| m.account.clone()).collect(),
+            server_names: mappings.iter().map(|m| (m.account.clone(), m.kid.clone())).collect(),
+        }
+    }
+
+    fn mappings(&self) -> Vec<AccountMapping> {
+        self.users
+            .iter()
+            .map(|u| AccountMapping { account: u.clone(), kid: self.server_names.get(u).cloned().unwrap_or_else(|| u.clone()) })
+            .collect()
+    }
+}
+
 /// What each operating system provides.
 pub trait Platform: Send + Sync + 'static {
+    /// Local accounts, reported to the server so a parent can assign them to kids.
+    /// Default: none, and the configured users stay as they are.
+    fn local_accounts(&self) -> Vec<LocalAccount> {
+        Vec::new()
+    }
+    /// An account is no longer limited: undo anything mirrored into the OS for it.
+    fn release_user(&self, _user: &str) {}
     /// Interactive sessions that belong to people (not greeters or services).
     fn sessions(&self) -> impl Future<Output = Result<Vec<Session>>> + Send;
     fn lock(&self, session: &Session) -> impl Future<Output = Result<()>> + Send;
@@ -78,6 +109,7 @@ struct Tracking {
 
 pub struct Agent<P: Platform> {
     pub config: Config,
+    managed: std::sync::RwLock<Managed>,
     pub platform: P,
     state: Mutex<State>,
     tracking: Mutex<HashMap<String, Tracking>>,
@@ -135,7 +167,13 @@ impl<P: Platform> Agent<P> {
             _ => TimeDelta::zero(),
         };
         let config_has_no_server = api.is_none();
+        // The mapping last received from the server wins over the install settings.
+        let managed = match &state.account_map {
+            Some(map) => Managed::from_mappings(map),
+            None => Managed { users: config.users.clone(), server_names: config.server_names.clone() },
+        };
         Ok(Arc::new(Agent {
+            managed: std::sync::RwLock::new(managed),
             config,
             platform,
             state: Mutex::new(state),
@@ -147,6 +185,58 @@ impl<P: Platform> Agent<P> {
             wake: tokio::sync::Notify::new(),
             clock_offset: std::sync::Mutex::new(offset),
         }))
+    }
+
+    fn managed_users(&self) -> Vec<String> {
+        self.managed.read().unwrap().users.clone()
+    }
+
+    /// The limited account's own spelling of `user` (Windows names are case-insensitive).
+    fn managed_name(&self, user: &str) -> Option<String> {
+        let m = self.managed.read().unwrap();
+        m.users
+            .iter()
+            .find(|u| if cfg!(windows) { u.eq_ignore_ascii_case(user) } else { *u == user })
+            .cloned()
+    }
+
+    fn is_managed(&self, user: &str) -> bool {
+        self.managed_name(user).is_some()
+    }
+
+    /// The kid (server username) a limited account counts against.
+    fn server_name(&self, user: &str) -> String {
+        self.managed.read().unwrap().server_names.get(user).cloned().unwrap_or_else(|| user.to_owned())
+    }
+
+    /// Report this computer's accounts and adopt the server's mapping of them to kids.
+    async fn sync_accounts(&self, api: &ServerApi) {
+        let mut accounts = self.platform.local_accounts();
+        if accounts.is_empty() {
+            return;
+        }
+        for a in &mut accounts {
+            if !a.admin && self.config.is_managed(&a.name) {
+                a.configured_kid = Some(self.config.server_name(&a.name).to_owned());
+            }
+        }
+        let reply = match api.accounts(&AccountsReport { accounts }).await {
+            Ok(reply) => reply,
+            Err(e) => {
+                tracing::debug!("account sync unavailable: {e:#}");
+                return;
+            }
+        };
+        let new = Managed::from_mappings(&reply.limited);
+        let old = std::mem::replace(&mut *self.managed.write().unwrap(), new.clone());
+        for user in old.users.iter().filter(|u| !new.users.contains(u)) {
+            tracing::info!(user, "no longer limited");
+            self.platform.release_user(user);
+        }
+        for m in reply.limited.iter().filter(|m| old.server_names.get(&m.account) != Some(&m.kid)) {
+            tracing::info!(user = %m.account, kid = %m.kid, "limited as");
+        }
+        self.state.lock().await.account_map = Some(new.mappings());
     }
 
     /// Check sessions now instead of at the next regular tick.
@@ -199,10 +289,10 @@ impl<P: Platform> Agent<P> {
         let today = now.date();
         let sessions = self.platform.sessions().await?;
 
-        for user in &self.config.users {
+        for user in &self.managed_users() {
             let mine: Vec<Session> = sessions
                 .iter()
-                .filter(|s| self.config.managed_name(&s.user) == Some(user.as_str()))
+                .filter(|s| self.managed_name(&s.user).as_deref() == Some(user.as_str()))
                 .cloned()
                 .collect();
             let in_use = mine.iter().any(|s| s.in_use);
@@ -318,8 +408,10 @@ impl<P: Platform> Agent<P> {
         let mut ticker = tokio::time::interval(SYNC);
         loop {
             ticker.tick().await;
-            for user in &self.config.users {
-                let server_user = self.config.server_name(user);
+            self.sync_accounts(api).await;
+            for user in &self.managed_users() {
+                let server_user = self.server_name(user);
+                let server_user = server_user.as_str();
                 match api.policy(server_user).await {
                     Ok((p, server_time)) if p.username == server_user => {
                         if let Some(t) = server_time {
@@ -385,9 +477,10 @@ impl<P: Platform> Agent<P> {
     }
 
     async fn stream_warnings<W: AsyncWrite + Unpin>(&self, username: &str, writer: &mut W) -> Result<()> {
-        let Some(username) = self.config.managed_name(username) else {
+        let Some(username) = self.managed_name(username) else {
             return write_line(writer, &SocketResponse::Unmanaged).await;
         };
+        let username = username.as_str();
         let mut rx = self.warnings.subscribe();
         write_line(writer, &self.status(username).await).await?;
         loop {
@@ -402,10 +495,10 @@ impl<P: Platform> Agent<P> {
     }
 
     async fn status(&self, username: &str) -> SocketResponse {
-        let Some(username) = self.config.managed_name(username) else {
+        let Some(username) = self.managed_name(username) else {
             return SocketResponse::Unmanaged;
         };
-        let (decision, used_minutes) = self.state.lock().await.decide(username, self.now());
+        let (decision, used_minutes) = self.state.lock().await.decide(&username, self.now());
         SocketResponse::Decision { decision, used_minutes }
     }
 
@@ -415,7 +508,7 @@ impl<P: Platform> Agent<P> {
                 self.status(&username).await
             }
             SocketRequest::RequestTime { username, minutes, reason } => {
-                let Some(username) = self.config.managed_name(&username).map(str::to_owned) else {
+                let Some(username) = self.managed_name(&username) else {
                     return SocketResponse::Unmanaged;
                 };
                 {
@@ -429,7 +522,7 @@ impl<P: Platform> Agent<P> {
                     t.last_request = Some(Instant::now());
                 }
                 let request = TimeRequest {
-                    username: self.config.server_name(&username).to_owned(),
+                    username: self.server_name(&username),
                     host: self.config.host.clone(),
                     requested_minutes: minutes.map(|m| m.min(24 * 60)),
                     reason: reason.map(|r| r.chars().take(500).collect()),
@@ -450,8 +543,7 @@ impl<P: Platform> Agent<P> {
                 let now = self.now();
                 let state = self.state.lock().await;
                 let users = self
-                    .config
-                    .users
+                    .managed_users()
                     .iter()
                     .map(|u| {
                         let (decision, used_minutes) = state.decide(u, now);
@@ -465,7 +557,7 @@ impl<P: Platform> Agent<P> {
                     .platform
                     .admins()
                     .into_iter()
-                    .filter(|a| !self.config.is_managed(a))
+                    .filter(|a| !self.is_managed(a))
                     .collect();
                 let last = self.state.lock().await.last_admin.clone().filter(|l| admins.contains(l));
                 SocketResponse::Admins { admins, last }
@@ -476,7 +568,7 @@ impl<P: Platform> Agent<P> {
 
     async fn parent_grant(&self, username: String, minutes: u32, admin: String, password: String) -> SocketResponse {
         let error = |message: &str| SocketResponse::Error { message: message.to_owned() };
-        let Some(username) = self.config.managed_name(&username).map(str::to_owned) else {
+        let Some(username) = self.managed_name(&username) else {
             return SocketResponse::Unmanaged;
         };
         if minutes == 0 || minutes > 24 * 60 {
@@ -493,7 +585,7 @@ impl<P: Platform> Agent<P> {
         }
 
         // A managed account fails exactly like a wrong password.
-        let verified = !self.config.is_managed(&admin)
+        let verified = !self.is_managed(&admin)
             && tokio::task::block_in_place(|| self.platform.verify_admin(&admin, &password))
                 .inspect_err(|e| tracing::warn!("parent check failed: {e}"))
                 .is_ok();

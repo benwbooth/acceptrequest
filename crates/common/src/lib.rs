@@ -186,6 +186,35 @@ pub enum RequestStatus {
     Denied,
 }
 
+/// A local account on a computer, as the client reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalAccount {
+    pub name: String,
+    /// Administrators can't be limited and are never offered for it.
+    pub admin: bool,
+    /// The kid this account was set up for locally (install settings), used only the first time
+    /// the server sees the account, so existing setups carry over.
+    #[serde(default)]
+    pub configured_kid: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountsReport {
+    pub accounts: Vec<LocalAccount>,
+}
+
+/// One limited account on a computer and the kid (server username) whose time it uses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountMapping {
+    pub account: String,
+    pub kid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountsReply {
+    pub limited: Vec<AccountMapping>,
+}
+
 /// Usage report a client sends to the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageReport {

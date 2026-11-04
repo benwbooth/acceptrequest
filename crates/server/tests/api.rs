@@ -439,3 +439,49 @@ async fn change_password_from_the_ui() {
     assert_eq!(s.call("POST", "/api/login", None, Some(json!({"password": "correct horse"}))).await.0, StatusCode::UNAUTHORIZED);
     assert_eq!(s.call("POST", "/api/login", None, Some(json!({"password": "new pass"}))).await.0, StatusCode::NO_CONTENT);
 }
+
+#[tokio::test]
+async fn computers_report_accounts_and_parents_assign_them() {
+    let s = server(with_password()).await;
+    let pc1 = db::add_client(&s.state.db, "Ryan-PC").await.unwrap();
+    let report = json!({"accounts": [
+        {"name": "ryany", "admin": false, "configured_kid": "ryan"},
+        {"name": "chloe", "admin": false},
+        {"name": "benbo", "admin": true, "configured_kid": "ryan"},
+    ]});
+    // What the install set up carries over; admins are never limited.
+    let (status, _, body) = s.call("POST", "/api/client/accounts", Some(&pc1), Some(report.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let reply: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(reply["limited"], json!([{"account": "ryany", "kid": "ryan"}]));
+
+    // The parent sees the accounts, with the unassigned one flagged as new.
+    let cookie = s.admin_cookie().await;
+    let me = Some(cookie.as_str());
+    let (_, _, body) = s.call("GET", "/api/overview", me, None).await;
+    let overview: Value = serde_json::from_str(&body).unwrap();
+    let accounts = &overview["clients"][0]["accounts"];
+    assert_eq!(accounts.as_array().unwrap().len(), 3);
+    let chloe = accounts.as_array().unwrap().iter().find(|a| a["name"] == "chloe").unwrap();
+    assert_eq!((chloe["kid"].clone(), chloe["new"].clone()), (Value::Null, json!(true)));
+
+    // Assign chloe, rename the kid, and the computer gets the new mapping on its next report.
+    assert_eq!(s.call("POST", "/api/users", me, Some(json!({"username": "chloe"}))).await.0, StatusCode::CREATED);
+    let (status, _, _) = s.call("PUT", "/api/clients/Ryan-PC/accounts/chloe", me, Some(json!({"kid": "chloe"}))).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(s.call("PUT", "/api/clients/Ryan-PC/accounts/benbo", me, Some(json!({"kid": "chloe"}))).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(s.call("PUT", "/api/users/ryan/name", me, Some(json!({"name": "Ryan"}))).await.0, StatusCode::NO_CONTENT);
+    let (_, _, body) = s.call("POST", "/api/client/accounts", Some(&pc1), Some(report.clone())).await;
+    let reply: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(reply["limited"], json!([{"account": "chloe", "kid": "chloe"}, {"account": "ryany", "kid": "ryan"}]));
+
+    // "Not limited" sticks even though the computer still says ryany was set up for ryan.
+    s.call("PUT", "/api/clients/Ryan-PC/accounts/ryany", me, Some(json!({"kid": null}))).await;
+    let (_, _, body) = s.call("POST", "/api/client/accounts", Some(&pc1), Some(report)).await;
+    let reply: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(reply["limited"], json!([{"account": "chloe", "kid": "chloe"}]));
+    let (_, _, body) = s.call("GET", "/api/overview", me, None).await;
+    let overview: Value = serde_json::from_str(&body).unwrap();
+    let ryan = overview["users"].as_array().unwrap().iter().find(|u| u["username"] == "ryan").unwrap();
+    assert_eq!(ryan["name"], "Ryan");
+}
