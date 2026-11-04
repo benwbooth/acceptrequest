@@ -63,22 +63,6 @@ async fn request_time(
     Ok(StatusCode::CREATED)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::valid_username;
-
-    #[test]
-    fn usernames() {
-        assert!(valid_username("kid"));
-        assert!(valid_username("_svc-1"));
-        assert!(!valid_username(""));
-        assert!(!valid_username("Kid"));
-        assert!(!valid_username("../etc"));
-        assert!(!valid_username("1kid"));
-        assert!(!valid_username(&"a".repeat(33)));
-    }
-}
-
 /// The computer reports its local accounts; the reply says which are limited and as which kid.
 async fn accounts(
     State(s): State<AppState>,
@@ -98,4 +82,20 @@ async fn accounts(
     }
     let limited = db::report_accounts(&s.db, client.id, &report.accounts, s.config.default_allowance_minutes).await?;
     Ok(Json(AccountsReply { limited }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_username;
+
+    #[test]
+    fn usernames() {
+        assert!(valid_username("kid"));
+        assert!(valid_username("_svc-1"));
+        assert!(!valid_username(""));
+        assert!(!valid_username("Kid"));
+        assert!(!valid_username("../etc"));
+        assert!(!valid_username("1kid"));
+        assert!(!valid_username(&"a".repeat(33)));
+    }
 }
