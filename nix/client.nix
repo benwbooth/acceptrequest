@@ -108,12 +108,6 @@ in
         RuntimeDirectoryPreserve = true;
         StateDirectory = "screentime";
         StateDirectoryMode = "0700";
-        # One-time move of usage and settings from before the project was renamed (acceptrequest).
-        ExecStartPre = "${pkgs.writeShellScript "screentime-migrate-client-state" ''
-          if [ -f /var/lib/acceptrequest/state.json ] && [ ! -e /var/lib/screentime/state.json ]; then
-            cp -a /var/lib/acceptrequest/state.json /var/lib/screentime/state.json
-          fi
-        ''}";
         Restart = "always";
         RestartSec = 2;
         ProtectSystem = "strict";

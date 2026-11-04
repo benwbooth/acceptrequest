@@ -146,21 +146,6 @@ in
         DynamicUser = true;
         StateDirectory = "screentime-server";
         StateDirectoryMode = "0700";
-        # One-time move of the database from before the project was renamed (acceptrequest).
-        # Runs as root ("+") because the old and new directories belong to different dynamic users.
-        ExecStartPre = "+${pkgs.writeShellScript "screentime-migrate-state" ''
-          old=/var/lib/private/acceptrequest-server
-          new=/var/lib/private/screentime-server
-          if [ -f "$old/acceptrequest.db" ] && [ ! -e "$new/screentime.db" ]; then
-            for suffix in "" -wal -shm; do
-              if [ -e "$old/acceptrequest.db$suffix" ]; then
-                mv "$old/acceptrequest.db$suffix" "$new/screentime.db$suffix"
-              fi
-            done
-            chown -R --reference="$new" "$new"
-            echo "moved the database from $old"
-          fi
-        ''}";
         LoadCredential = credentials;
         Restart = "on-failure";
         AmbientCapabilities = lib.mkIf (port < 1024) [ "CAP_NET_BIND_SERVICE" ];
