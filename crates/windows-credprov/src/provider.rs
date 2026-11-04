@@ -23,7 +23,6 @@ use windows_core::IUnknownImpl;
 pub const CLSID: GUID = GUID::from_u128(0x6f6b7a8e_2d1c_4b8a_9a53_7c0e2f4a91d3);
 
 const PIPE_TIMEOUT: Duration = Duration::from_secs(4);
-const ASK_AMOUNTS: [u32; 3] = [15, 30, 60];
 const ADD_AMOUNTS: [u32; 5] = [15, 30, 45, 60, 120];
 
 // Field IDs, in display order.
@@ -31,13 +30,13 @@ const F_IMAGE: u32 = 0;
 const F_TITLE: u32 = 1;
 const F_STATUS: u32 = 2;
 const F_WHO: u32 = 3;
-const F_ASK_FIRST: u32 = 4; // 4, 5, 6
-const F_PARENT_LABEL: u32 = 7;
-const F_ADMIN: u32 = 8;
-const F_PASSWORD: u32 = 9;
-const F_ADD: u32 = 10;
-const F_SUBMIT: u32 = 11;
-const FIELD_COUNT: u32 = 12;
+const F_ASK: u32 = 4;
+const F_PARENT_LABEL: u32 = 5;
+const F_ADMIN: u32 = 6;
+const F_PASSWORD: u32 = 7;
+const F_ADD: u32 = 8;
+const F_SUBMIT: u32 = 9;
+const FIELD_COUNT: u32 = 10;
 
 fn fmt_minutes(m: u32) -> String {
     match (m / 60, m % 60) {
@@ -54,13 +53,7 @@ fn field(id: u32) -> (CREDENTIAL_PROVIDER_FIELD_TYPE, String) {
         F_TITLE => (CPFT_LARGE_TEXT, "Screen time".into()),
         F_STATUS => (CPFT_SMALL_TEXT, String::new()),
         F_WHO => (CPFT_COMBOBOX, "Who".into()),
-        id if (F_ASK_FIRST..F_ASK_FIRST + 3).contains(&id) => {
-            let label = match ASK_AMOUNTS[(id - F_ASK_FIRST) as usize] {
-                60 => "Ask for 1 more hour".to_string(),
-                m => format!("Ask for {m} more minutes"),
-            };
-            (CPFT_COMMAND_LINK, label)
-        }
+        F_ASK => (CPFT_COMMAND_LINK, "Request more time".into()),
         F_PARENT_LABEL => (CPFT_SMALL_TEXT, "My parent is here".into()),
         F_ADMIN => (CPFT_EDIT_TEXT, "Parent's account".into()),
         F_PASSWORD => (CPFT_PASSWORD_TEXT, "Parent's password".into()),
@@ -335,12 +328,11 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
 
     fn CommandLinkClicked(&self, id: u32) -> Result<()> {
         guard(|| {
-            if !(F_ASK_FIRST..F_ASK_FIRST + 3).contains(&id) {
+            if id != F_ASK {
                 return Err(E_INVALIDARG.into());
             }
             let Some(username) = self.selected_user() else { return Ok(()) };
-            let minutes = ASK_AMOUNTS[(id - F_ASK_FIRST) as usize];
-            let (text, _) = reply_text(ask(SocketRequest::RequestTime { username, minutes: Some(minutes), reason: None }));
+            let (text, _) = reply_text(ask(SocketRequest::RequestTime { username, minutes: None, reason: None }));
             self.set_status(&text);
             Ok(())
         })
@@ -408,6 +400,10 @@ fn tile_bitmap() -> Result<HBITMAP> {
         };
         let mut bits: *mut c_void = std::ptr::null_mut();
         let bitmap = CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0)?;
+        // Fill edge to edge with the icon's blue so the sign-in screen's round crop shows no
+        // black corners around the rounded square.
+        let pixels = std::slice::from_raw_parts_mut(bits as *mut u32, (SIZE * SIZE) as usize);
+        pixels.fill(0xff2b59c3);
         let dc = CreateCompatibleDC(None);
         let old = SelectObject(dc, bitmap.into());
         let _ = DrawIconEx(dc, 0, 0, HICON(icon.0), SIZE, SIZE, 0, None, DI_NORMAL);

@@ -73,11 +73,11 @@ mod harness {
         let bitmap = unsafe { cred.GetBitmapValue(0) };
         println!("tile image: {}", if bitmap.is_ok() { "ok" } else { "missing" });
         let (mut items, mut sel) = (0u32, 0u32);
-        unsafe { cred.GetComboBoxValueCount(10, &mut items, &mut sel) }?;
-        let amounts: Vec<String> = (0..items).map(|i| take(unsafe { cred.GetComboBoxValueAt(10, i) }.unwrap())).collect();
+        unsafe { cred.GetComboBoxValueCount(8, &mut items, &mut sel) }?;
+        let amounts: Vec<String> = (0..items).map(|i| take(unsafe { cred.GetComboBoxValueAt(8, i) }.unwrap())).collect();
         println!("parent amounts: {amounts:?}, selected {sel}");
 
-        println!("click 'Ask for 15 minutes more':");
+        println!("click 'Request more time':");
         unsafe { cred.CommandLinkClicked(4) }?;
         println!("click it again:");
         unsafe { cred.CommandLinkClicked(4) }?;
@@ -87,8 +87,8 @@ mod harness {
             let a: Vec<u16> = admin.encode_utf16().chain(Some(0)).collect();
             let p: Vec<u16> = password.encode_utf16().chain(Some(0)).collect();
             unsafe {
-                cred.SetStringValue(8, PCWSTR(a.as_ptr()))?;
-                cred.SetStringValue(9, PCWSTR(p.as_ptr()))?;
+                cred.SetStringValue(6, PCWSTR(a.as_ptr()))?;
+                cred.SetStringValue(7, PCWSTR(p.as_ptr()))?;
             }
             let mut resp = CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE::default();
             let mut ser = CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION::default();

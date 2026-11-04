@@ -47,7 +47,6 @@ mod tray {
     const TOAST_MARGIN: i32 = 16;
     const TOAST_TIMER: usize = 1;
     const TOAST_SECONDS: u32 = 8;
-    const REQUEST_AMOUNTS: [u32; 3] = [15, 30, 60];
     const PARENT_AMOUNTS: [u32; 4] = [15, 30, 60, 120];
     const CMD_REQUEST: usize = 100;
     const CMD_PARENT: usize = 200;
@@ -230,11 +229,8 @@ mod tray {
             let status = wide(&STATUS.lock().unwrap().clone());
             let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, pcwstr(&status));
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-            let labels: Vec<Vec<u16>> =
-                REQUEST_AMOUNTS.iter().map(|m| wide(&format!("Ask for {} more", fmt_minutes(*m)))).collect();
-            for (i, label) in labels.iter().enumerate() {
-                let _ = AppendMenuW(menu, MF_STRING, CMD_REQUEST + i, pcwstr(label));
-            }
+            let request = wide("Request more time");
+            let _ = AppendMenuW(menu, MF_STRING, CMD_REQUEST, pcwstr(&request));
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             if let Ok(parent) = CreatePopupMenu() {
                 let labels: Vec<Vec<u16>> =
@@ -252,10 +248,9 @@ mod tray {
             let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, None, hwnd, None).0 as usize;
             let _ = DestroyMenu(menu);
             match cmd {
-                c if (CMD_REQUEST..CMD_REQUEST + REQUEST_AMOUNTS.len()).contains(&c) => {
-                    let minutes = REQUEST_AMOUNTS[c - CMD_REQUEST];
+                CMD_REQUEST => {
                     std::thread::spawn(move || {
-                        report(ask(&SocketRequest::RequestTime { username: username(), minutes: Some(minutes), reason: None }))
+                        report(ask(&SocketRequest::RequestTime { username: username(), minutes: None, reason: None }))
                     });
                 }
                 c if (CMD_PARENT..CMD_PARENT + PARENT_AMOUNTS.len()).contains(&c) => {
@@ -315,7 +310,7 @@ mod tray {
             DrawTextW(hdc, &mut title, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
             SelectObject(hdc, small_font.into());
             SetTextColor(hdc, COLORREF(0x00b9b4ae));
-            let mut hint = "Right-click the screen time icon to ask for more".encode_utf16().collect::<Vec<u16>>();
+            let mut hint = "Click the hourglass icon to request more time".encode_utf16().collect::<Vec<u16>>();
             let mut r = RECT { left: 20, top: 42, right: TOAST_W - 12, bottom: 66 };
             DrawTextW(hdc, &mut hint, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
             SelectObject(hdc, old);
