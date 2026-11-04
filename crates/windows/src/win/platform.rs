@@ -13,10 +13,12 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::NetworkManagement::NetManagement::{
-    NetApiBufferFree, NetUserGetInfo, NetUserSetInfo, USER_INFO_1, USER_INFO_1020, USER_PRIV_ADMIN,
+    LOCALGROUP_MEMBERS_INFO_2, NetApiBufferFree, NetLocalGroupGetMembers, NetUserGetInfo, NetUserSetInfo,
+    UF_ACCOUNTDISABLE, USER_INFO_1, USER_INFO_1020, USER_PRIV_ADMIN,
 };
 use windows::Win32::Security::{
-    EqualSid, GetTokenInformation, LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, LogonUserW, PSID,
+    EqualSid, GetTokenInformation, LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, LogonUserW,
+    LookupAccountSidW, PSID, SID_NAME_USE, SidTypeUser,
     SECURITY_MAX_SID_SIZE, TOKEN_GROUPS, TokenGroups, WinBuiltinAdministratorsSid, CreateWellKnownSid,
 };
 use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -31,7 +33,7 @@ use windows::Win32::System::RemoteDesktop::{
 use windows::Win32::System::Threading::{
     CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, PROCESS_INFORMATION, STARTUPINFOW,
 };
-use windows::core::PWSTR;
+use windows::core::{PCWSTR, PWSTR};
 
 /// Hours in Windows' weekly logon-hours map.
 const UNITS_PER_WEEK: u32 = 168;
@@ -109,6 +111,10 @@ impl Platform for Windows {
         Ok(())
     }
 
+    fn admins(&self) -> Vec<String> {
+        local_admins()
+    }
+
     fn verify_admin(&self, admin: &str, password: &str) -> Result<(), String> {
         verify_admin(admin, password)
     }
@@ -178,6 +184,71 @@ fn list_sessions() -> Result<Vec<Session>> {
     }
     unsafe { WTSFreeMemory(info as _) };
     Ok(out)
+}
+
+/// Enabled local user accounts in BUILTIN\Administrators (looked up by SID, so it works
+/// whatever the group is called in this Windows language).
+pub fn local_admins() -> Vec<String> {
+    let mut sid = [0u8; SECURITY_MAX_SID_SIZE as usize];
+    let mut size = sid.len() as u32;
+    let psid = PSID(sid.as_mut_ptr() as _);
+    if unsafe { CreateWellKnownSid(WinBuiltinAdministratorsSid, None, Some(psid), &mut size) }.is_err() {
+        return Vec::new();
+    }
+    let (mut name, mut domain) = ([0u16; 256], [0u16; 256]);
+    let (mut name_len, mut domain_len) = (name.len() as u32, domain.len() as u32);
+    let mut use_ = SID_NAME_USE::default();
+    if unsafe {
+        LookupAccountSidW(
+            None,
+            psid,
+            Some(PWSTR(name.as_mut_ptr())),
+            &mut name_len,
+            Some(PWSTR(domain.as_mut_ptr())),
+            &mut domain_len,
+            &mut use_,
+        )
+    }
+    .is_err()
+    {
+        return Vec::new();
+    }
+    let mut buf: *mut u8 = std::ptr::null_mut();
+    let (mut read, mut total) = (0u32, 0u32);
+    let rc = unsafe {
+        NetLocalGroupGetMembers(None, PCWSTR(name.as_ptr()), 2, &mut buf, u32::MAX, &mut read, &mut total, None)
+    };
+    if rc != 0 || buf.is_null() {
+        return Vec::new();
+    }
+    let members = unsafe { std::slice::from_raw_parts(buf as *const LOCALGROUP_MEMBERS_INFO_2, read as usize) };
+    let computer = std::env::var("COMPUTERNAME").unwrap_or_default();
+    let mut out = Vec::new();
+    for m in members {
+        if m.lgrmi2_sidusage != SidTypeUser {
+            continue;
+        }
+        let full = unsafe { m.lgrmi2_domainandname.to_string() }.unwrap_or_default();
+        let Some((domain, user)) = full.split_once('\\') else { continue };
+        if domain.eq_ignore_ascii_case(&computer) && !is_disabled(user) {
+            out.push(user.to_owned());
+        }
+    }
+    unsafe { NetApiBufferFree(Some(buf as _)) };
+    out
+}
+
+fn is_disabled(user: &str) -> bool {
+    let name = wide(user);
+    let mut buf: *mut u8 = std::ptr::null_mut();
+    unsafe {
+        if NetUserGetInfo(None, pcwstr(&name), 1, &mut buf) != 0 || buf.is_null() {
+            return true;
+        }
+        let disabled = (*(buf as *const USER_INFO_1)).usri1_flags & UF_ACCOUNTDISABLE == UF_ACCOUNTDISABLE;
+        NetApiBufferFree(Some(buf as _));
+        disabled
+    }
 }
 
 /// Whether a local account has administrator rights (USER_PRIV_ADMIN).

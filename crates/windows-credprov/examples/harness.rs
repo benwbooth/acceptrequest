@@ -82,12 +82,14 @@ mod harness {
         println!("click it again:");
         unsafe { cred.CommandLinkClicked(4) }?;
 
-        for (admin, password) in [("", ""), (args.get(2).map_or("nobody", |s| s.as_str()), args.get(3).map_or("wrong", |s| s.as_str()))] {
-            println!("submit 'My parent is here' as {admin:?}:");
-            let a: Vec<u16> = admin.encode_utf16().chain(Some(0)).collect();
+        let (mut n, mut sel) = (0u32, 0u32);
+        unsafe { cred.GetComboBoxValueCount(6, &mut n, &mut sel) }?;
+        let parents: Vec<String> = (0..n).map(|i| take(unsafe { cred.GetComboBoxValueAt(6, i) }.unwrap())).collect();
+        println!("parents: {parents:?}, preselected {sel}");
+        for password in ["", args.get(2).map_or("wrong", |s| s.as_str())] {
+            println!("submit 'My parent is here' with a password of {} chars:", password.len());
             let p: Vec<u16> = password.encode_utf16().chain(Some(0)).collect();
             unsafe {
-                cred.SetStringValue(6, PCWSTR(a.as_ptr()))?;
                 cred.SetStringValue(7, PCWSTR(p.as_ptr()))?;
             }
             let mut resp = CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE::default();

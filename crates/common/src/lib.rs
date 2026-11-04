@@ -218,6 +218,8 @@ pub enum SocketRequest {
     ParentGrant { username: String, minutes: u32, admin: String, password: String },
     /// Every limited account and where it stands, for the sign-in screen.
     ListUsers,
+    /// Accounts that can approve "My parent is here", with the one used last.
+    ListAdmins,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,6 +240,7 @@ pub enum SocketResponse {
     Warning { remaining_minutes: u32 },
     Granted { minutes: u32 },
     Users { users: Vec<UserStatus> },
+    Admins { admins: Vec<String>, last: Option<String> },
     Error { message: String },
 }
 

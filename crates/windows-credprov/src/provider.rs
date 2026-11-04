@@ -55,7 +55,7 @@ fn field(id: u32) -> (CREDENTIAL_PROVIDER_FIELD_TYPE, String) {
         F_WHO => (CPFT_COMBOBOX, "Who".into()),
         F_ASK => (CPFT_COMMAND_LINK, "Request more time".into()),
         F_PARENT_LABEL => (CPFT_SMALL_TEXT, "My parent is here".into()),
-        F_ADMIN => (CPFT_EDIT_TEXT, "Parent's account".into()),
+        F_ADMIN => (CPFT_COMBOBOX, "Parent".into()),
         F_PASSWORD => (CPFT_PASSWORD_TEXT, "Parent's password".into()),
         F_ADD => (CPFT_COMBOBOX, "Add".into()),
         _ => (CPFT_SUBMIT_BUTTON, "Add time".into()),
@@ -134,7 +134,9 @@ struct Credential {
     who: RefCell<u32>,
     add: RefCell<u32>,
     status: RefCell<String>,
-    admin: RefCell<String>,
+    /// Accounts that can approve time, and which one is picked (the last one used, at first).
+    admins: RefCell<Vec<String>>,
+    admin_sel: RefCell<u32>,
     password: RefCell<String>,
     events: RefCell<Option<ICredentialProviderCredentialEvents>>,
 }
@@ -142,12 +144,18 @@ struct Credential {
 impl Credential {
     fn new(users: Vec<UserStatus>) -> Credential {
         let status = users.first().map(describe).unwrap_or_default();
+        let (admins, last) = match ask(SocketRequest::ListAdmins) {
+            Ok(SocketResponse::Admins { admins, last }) => (admins, last),
+            _ => (Vec::new(), None),
+        };
+        let admin_sel = last.and_then(|l| admins.iter().position(|a| *a == l)).unwrap_or(0) as u32;
         Credential {
             users: RefCell::new(users),
             who: RefCell::new(0),
             add: RefCell::new(1),
             status: RefCell::new(status),
-            admin: RefCell::default(),
+            admins: RefCell::new(admins),
+            admin_sel: RefCell::new(admin_sel),
             password: RefCell::default(),
             events: RefCell::default(),
         }
@@ -244,7 +252,6 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
     fn GetStringValue(&self, id: u32) -> Result<PWSTR> {
         guard(|| match id {
             F_STATUS => co_string(&self.status.borrow()),
-            F_ADMIN => co_string(&self.admin.borrow()),
             F_PASSWORD => co_string(""),
             id if id < FIELD_COUNT => co_string(&field(id).1),
             _ => Err(E_INVALIDARG.into()),
@@ -271,6 +278,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             let (n, sel) = match id {
                 F_WHO => (self.users.borrow().len() as u32, *self.who.borrow()),
                 F_ADD => (ADD_AMOUNTS.len() as u32, *self.add.borrow()),
+                F_ADMIN => (self.admins.borrow().len() as u32, *self.admin_sel.borrow()),
                 _ => return Err(E_INVALIDARG.into()),
             };
             unsafe {
@@ -291,6 +299,10 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
                 Some(m) => co_string(&fmt_minutes(*m)),
                 None => Err(E_INVALIDARG.into()),
             },
+            F_ADMIN => match self.admins.borrow().get(item as usize) {
+                Some(a) => co_string(a),
+                None => Err(E_INVALIDARG.into()),
+            },
             _ => Err(E_INVALIDARG.into()),
         })
     }
@@ -299,7 +311,6 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         guard(|| {
             let text = if value.is_null() { String::new() } else { unsafe { value.to_string() }.unwrap_or_default() };
             match id {
-                F_ADMIN => *self.admin.borrow_mut() = text,
                 F_PASSWORD => *self.password.borrow_mut() = text,
                 _ => return Err(E_INVALIDARG.into()),
             }
@@ -320,6 +331,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
                     self.set_status(&text);
                 }
                 F_ADD if (item as usize) < ADD_AMOUNTS.len() => *self.add.borrow_mut() = item,
+                F_ADMIN if (item as usize) < self.admins.borrow().len() => *self.admin_sel.borrow_mut() = item,
                 _ => return Err(E_INVALIDARG.into()),
             }
             Ok(())
@@ -349,12 +361,12 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             if response.is_null() || status_text.is_null() || status_icon.is_null() {
                 return Err(E_INVALIDARG.into());
             }
-            let admin = self.admin.borrow().trim().to_owned();
+            let admin = self.admins.borrow().get(*self.admin_sel.borrow() as usize).cloned().unwrap_or_default();
             let password = std::mem::take(&mut *self.password.borrow_mut());
             self.show(F_PASSWORD, "");
             let (text, ok) = match self.selected_user() {
                 _ if admin.is_empty() || password.is_empty() => {
-                    ("Enter a parent's account name and password.".to_string(), false)
+                    ("Pick a parent and enter their password.".to_string(), false)
                 }
                 None => ("No account to add time for.".to_string(), false),
                 Some(username) => {

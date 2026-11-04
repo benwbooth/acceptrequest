@@ -47,6 +47,10 @@ mod linux {
             self.logind.terminate_user(uid).await
         }
 
+        fn admins(&self) -> Vec<String> {
+            parent::group_members(&self.admin_group).into_iter().filter(|u| u != "root").collect()
+        }
+
         fn verify_admin(&self, admin: &str, password: &str) -> Result<(), String> {
             if admin == "root" || !parent::in_group(admin, &self.admin_group) {
                 return Err(format!("{admin} is not in {}", self.admin_group));

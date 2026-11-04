@@ -110,6 +110,28 @@ pub fn authenticate(service: &str, confdir: Option<&str>, user: &str, password: 
     result
 }
 
+/// The members listed for `group` in the group database (not users who only have it as their
+/// primary group).
+pub fn group_members(group: &str) -> Vec<String> {
+    let Ok(group_c) = CString::new(group) else { return Vec::new() };
+    let mut buf = vec![0 as c_char; 64 * 1024];
+    let mut gr: libc::group = unsafe { std::mem::zeroed() };
+    let mut out: *mut libc::group = std::ptr::null_mut();
+    let rc = unsafe { libc::getgrnam_r(group_c.as_ptr(), &mut gr, buf.as_mut_ptr(), buf.len(), &mut out) };
+    if rc != 0 || out.is_null() || gr.gr_mem.is_null() {
+        return Vec::new();
+    }
+    let mut members = Vec::new();
+    let mut p = gr.gr_mem;
+    unsafe {
+        while !(*p).is_null() {
+            members.push(CStr::from_ptr(*p).to_string_lossy().into_owned());
+            p = p.add(1);
+        }
+    }
+    members
+}
+
 /// Whether `user` belongs to `group`, as a primary or supplementary group.
 pub fn in_group(user: &str, group: &str) -> bool {
     let (Ok(user_c), Ok(group_c)) = (CString::new(user), CString::new(group)) else {

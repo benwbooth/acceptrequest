@@ -19,8 +19,8 @@ mod tray {
         FW_NORMAL, FW_SEMIBOLD, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
     };
     use windows::Win32::Security::Credentials::{
-        CREDUI_INFOW, CREDUIWIN_GENERIC, CRED_PACK_FLAGS, CredUIPromptForWindowsCredentialsW,
-        CredUnPackAuthenticationBufferW,
+        CREDUI_INFOW, CREDUIWIN_ENUMERATE_ADMINS, CRED_PACK_FLAGS,
+        CredPackAuthenticationBufferW, CredUIPromptForWindowsCredentialsW, CredUnPackAuthenticationBufferW,
     };
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -183,12 +183,37 @@ mod tray {
             pszCaptionText: pcwstr(&caption),
             ..Default::default()
         };
+        // Offer the computer's administrator accounts to pick from, starting with the last one used.
+        let last = match ask(&SocketRequest::ListAdmins) {
+            Ok(SocketResponse::Admins { last, .. }) => last,
+            _ => None,
+        };
+        let mut prefill: Vec<u8> = Vec::new();
+        if let Some(last) = &last {
+            let (user, empty) = (wide(last), wide(""));
+            let mut size = 0u32;
+            unsafe {
+                let _ = CredPackAuthenticationBufferW(CRED_PACK_FLAGS(0), pcwstr(&user), pcwstr(&empty), None, &mut size);
+                prefill.resize(size as usize, 0);
+                if CredPackAuthenticationBufferW(CRED_PACK_FLAGS(0), pcwstr(&user), pcwstr(&empty), Some(prefill.as_mut_ptr()), &mut size).is_err() {
+                    prefill.clear();
+                }
+            }
+        }
         let mut package = 0u32;
         let mut out: *mut core::ffi::c_void = std::ptr::null_mut();
         let mut out_size = 0u32;
         let rc = unsafe {
             CredUIPromptForWindowsCredentialsW(
-                Some(&info), 0, &mut package, None, 0, &mut out, &mut out_size, None, CREDUIWIN_GENERIC,
+                Some(&info),
+                0,
+                &mut package,
+                (!prefill.is_empty()).then_some(prefill.as_ptr() as *const _),
+                prefill.len() as u32,
+                &mut out,
+                &mut out_size,
+                None,
+                CREDUIWIN_ENUMERATE_ADMINS,
             )
         };
         if rc != 0 {

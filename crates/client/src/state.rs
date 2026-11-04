@@ -32,6 +32,9 @@ pub struct State {
     pub local_grants: HashMap<String, LocalGrant>,
     /// The latest trusted time seen. Time never runs backwards past it, so setting the clock
     /// back while offline doesn't reopen used-up time or downtime.
+    /// The administrator who last approved time here, offered first next time.
+    #[serde(default)]
+    pub last_admin: Option<String>,
     #[serde(default)]
     pub trusted_time: Option<chrono::DateTime<chrono::Utc>>,
 }

@@ -45,6 +45,10 @@ pub trait Platform: Send + Sync + 'static {
     fn lock(&self, session: &Session) -> impl Future<Output = Result<()>> + Send;
     /// End all of `user`'s sessions.
     fn end_sessions(&self, user: &str, sessions: &[Session]) -> impl Future<Output = Result<()>> + Send;
+    /// Accounts that can approve time with "My parent is here". Default: none listed.
+    fn admins(&self) -> Vec<String> {
+        Vec::new()
+    }
     /// Check that `admin` may approve time and that `password` is theirs. Blocking.
     fn verify_admin(&self, admin: &str, password: &str) -> Result<(), String>;
     /// Called each tick for a session whose user is allowed to be on, e.g. to make sure the
@@ -456,6 +460,16 @@ impl<P: Platform> Agent<P> {
                     .collect();
                 SocketResponse::Users { users }
             }
+            SocketRequest::ListAdmins => {
+                let admins: Vec<String> = self
+                    .platform
+                    .admins()
+                    .into_iter()
+                    .filter(|a| !self.config.is_managed(a))
+                    .collect();
+                let last = self.state.lock().await.last_admin.clone().filter(|l| admins.contains(l));
+                SocketResponse::Admins { admins, last }
+            }
             SocketRequest::Subscribe { .. } => unreachable!("handled by the connection loop"),
         }
     }
@@ -492,6 +506,7 @@ impl<P: Platform> Agent<P> {
         self.parent_failures.lock().await.clear();
         let mut state = self.state.lock().await;
         state.add_local_grant(&username, self.now(), minutes);
+        state.last_admin = Some(admin.clone());
         if let Err(e) = state.save(&self.config.state_dir) {
             tracing::error!("saving state failed: {e:#}");
         }

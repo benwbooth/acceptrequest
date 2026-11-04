@@ -65,6 +65,11 @@ fn report(response: SocketResponse) -> Result<()> {
                 println!("{}: {} minutes used, {:?}", u.username, u.used_minutes, u.decision);
             }
         }
+        SocketResponse::Admins { admins, last } => {
+            for a in admins {
+                println!("{a}{}", if last.as_deref() == Some(a.as_str()) { " (last used)" } else { "" });
+            }
+        }
         SocketResponse::Error { message } => bail!("{message}"),
     }
     Ok(())
