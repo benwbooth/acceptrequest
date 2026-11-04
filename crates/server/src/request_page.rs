@@ -35,13 +35,15 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 form.custom { display: flex; gap: 10px; margin-bottom: 14px; }
 form.custom input { flex: 1; font: inherit; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--fg); min-width: 0; }
 form.custom button { width: auto; padding: 0 18px; }
+a.back { display: block; text-align: center; margin-top: 24px; padding: 14px 0; border-radius: 10px; border: 1px solid var(--line); color: var(--accent); text-decoration: none; font-weight: 600; }
 ";
 
 fn layout(title: &str, body: &str) -> Html<String> {
     Html(format!(
         "<!doctype html><html lang=en><head><meta charset=utf-8>\
          <meta name=viewport content=\"width=device-width, initial-scale=1\">\
-         <title>{}</title><style>{STYLE}</style></head><body><main>{body}</main></body></html>",
+         <title>{}</title><style>{STYLE}</style></head><body><main>{body}\
+         <a class=back href=\"/\">Open Screen time</a></main></body></html>",
         escape(title)
     ))
 }

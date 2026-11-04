@@ -114,6 +114,7 @@ async fn notification_link_grants_once() {
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("&lt;b&gt;homework&lt;/b&gt;") && !page.contains("<b>homework"));
     assert!(page.contains("+45 min") && page.contains("Custom minutes"));
+    assert!(page.contains("href=\"/\">Open Screen time"), "the page needs a way back to the app");
 
     assert_eq!(s.call("GET", &format!("/r/{}/wrong", row.id), None, None).await.0, StatusCode::NOT_FOUND);
     assert_eq!(s.call("POST", &format!("/act/{}/wrong/30", row.id), None, None).await.0, StatusCode::NOT_FOUND);
