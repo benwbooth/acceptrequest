@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::server::ServerApi;
 use crate::state::State;
 use acceptrequest_common::{
-    Decision, SocketRequest, SocketResponse, TimeRequest, UsageReport, UserStatus, WARNING_THRESHOLDS,
+    Decision, DenyReason, SocketRequest, SocketResponse, TimeRequest, UsageReport, UserStatus, WARNING_THRESHOLDS,
 };
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDateTime, TimeDelta, Utc};
@@ -64,6 +64,9 @@ struct Tracking {
     /// Whether the user was signed in while still allowed at the last tick. The grace period is
     /// only for time running out mid-session; signing in while already out of time gets none.
     in_allowed_session: bool,
+    /// Set after the first enforcement since the agent started. Sessions that already exist at
+    /// that point (the agent was just installed or restarted) get the grace period.
+    seen: bool,
 }
 
 pub struct Agent<P: Platform> {
@@ -75,6 +78,9 @@ pub struct Agent<P: Platform> {
     warnings: broadcast::Sender<(String, u32)>,
     /// Times of recent wrong "My parent is here" passwords, for the lockout.
     parent_failures: Mutex<Vec<Instant>>,
+    /// Set once the first sync with the server has been attempted. Nothing is enforced before
+    /// then, so a fresh install or restart never acts on a missing or stale schedule.
+    synced_once: std::sync::atomic::AtomicBool,
     /// How far this machine's clock is behind the server's. Setting the PC's clock back (in
     /// the BIOS, say) doesn't buy time while the server is reachable.
     clock_offset: std::sync::Mutex<TimeDelta>,
@@ -116,6 +122,7 @@ impl<P: Platform> Agent<P> {
             }
             _ => TimeDelta::zero(),
         };
+        let config_has_no_server = api.is_none();
         Ok(Arc::new(Agent {
             config,
             platform,
@@ -124,6 +131,7 @@ impl<P: Platform> Agent<P> {
             api,
             warnings: broadcast::channel(64).0,
             parent_failures: Mutex::new(Vec::new()),
+            synced_once: std::sync::atomic::AtomicBool::new(config_has_no_server),
             clock_offset: std::sync::Mutex::new(offset),
         }))
     }
@@ -193,7 +201,9 @@ impl<P: Platform> Agent<P> {
                 self.platform.sync_os_restrictions(user, &state, now_utc);
                 state.decide(user, now).0
             };
-            self.enforce(user, &mine, decision).await;
+            if self.synced_once.load(std::sync::atomic::Ordering::Relaxed) {
+                self.enforce(user, &mine, decision).await;
+            }
         }
 
         let mut state = self.state.lock().await;
@@ -204,6 +214,10 @@ impl<P: Platform> Agent<P> {
     async fn enforce(&self, user: &str, sessions: &[Session], decision: Decision) {
         let mut tracking = self.tracking.lock().await;
         let t = tracking.entry(user.to_owned()).or_default();
+        if !t.seen {
+            t.seen = true;
+            t.in_allowed_session = !sessions.is_empty();
+        }
 
         let remaining = match decision {
             Decision::Allowed { remaining_minutes } => {
@@ -213,6 +227,9 @@ impl<P: Platform> Agent<P> {
                 t.in_allowed_session = !sessions.is_empty();
                 remaining_minutes
             }
+            // Without any schedule yet, new sign-ins are refused (PAM, logon hours), but nobody
+            // already signed in is thrown out over a missing download.
+            Decision::Denied { reason: DenyReason::NoPolicy } => return,
             Decision::Denied { reason } => {
                 if sessions.is_empty() {
                     t.denied_since = None;
@@ -307,6 +324,8 @@ impl<P: Platform> Agent<P> {
             if let Err(e) = state.save(&self.config.state_dir) {
                 tracing::error!("saving state failed: {e:#}");
             }
+            drop(state);
+            self.synced_once.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -460,7 +479,6 @@ async fn write_line<W: AsyncWrite + Unpin>(writer: &mut W, response: &SocketResp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acceptrequest_common::DenyReason;
 
     #[derive(Default)]
     struct Fake {
@@ -520,6 +538,25 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(60)).await;
         a.enforce("kid", &session(), OUT).await;
         assert_eq!(*a.platform.log.lock().unwrap(), ["lock 1", "lock 1", "end kid"]);
+    }
+
+    #[tokio::test]
+    async fn already_signed_in_when_the_agent_starts_gets_the_grace_period() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = agent(dir.path(), Duration::from_secs(120));
+        a.enforce("kid", &session(), OUT).await;
+        assert_eq!(*a.platform.log.lock().unwrap(), ["lock 1"]);
+    }
+
+    #[tokio::test]
+    async fn no_schedule_yet_never_ends_a_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = agent(dir.path(), Duration::from_millis(1));
+        let none = Decision::Denied { reason: DenyReason::NoPolicy };
+        a.enforce("kid", &session(), none.clone()).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        a.enforce("kid", &session(), none).await;
+        assert!(a.platform.log.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
