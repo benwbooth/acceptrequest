@@ -10,7 +10,7 @@ use axum::http::request::Parts;
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 
-pub const SESSION_COOKIE: &str = "acceptrequest_session";
+pub const SESSION_COOKIE: &str = "screentime_session";
 pub const SESSION_DAYS: i64 = 30;
 
 /// A fresh random token, hex encoded.

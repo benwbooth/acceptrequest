@@ -1,6 +1,6 @@
-//! HTTP client for the acceptrequest server's client API.
+//! HTTP client for the screentime server's client API.
 
-use acceptrequest_common::{Policy, TimeRequest, UsageReport};
+use screentime_common::{Policy, TimeRequest, UsageReport};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::Path;

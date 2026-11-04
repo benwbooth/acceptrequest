@@ -1,5 +1,5 @@
-use acceptrequest_common::{DowntimeWindow, Policy, UsageReport};
-use acceptrequest_server::{AppState, auth, config::Config, db, open_db, router};
+use screentime_common::{DowntimeWindow, Policy, UsageReport};
+use screentime_server::{AppState, auth, config::Config, db, open_db, router};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -26,7 +26,7 @@ impl TestServer {
     async fn call(&self, method: &str, uri: &str, auth: Option<&str>, body: Option<Value>) -> (StatusCode, Vec<(String, String)>, String) {
         let mut req = Request::builder().method(method).uri(uri);
         if let Some(a) = auth {
-            req = if a.starts_with("acceptrequest_session=") {
+            req = if a.starts_with("screentime_session=") {
                 req.header(header::COOKIE, a)
             } else {
                 req.header(header::AUTHORIZATION, format!("Bearer {a}"))
@@ -133,7 +133,7 @@ async fn admin_login_and_settings() {
     let s = server(with_password()).await;
     assert_eq!(s.call("GET", "/api/overview", None, None).await.0, StatusCode::UNAUTHORIZED);
     assert_eq!(
-        s.call("GET", "/api/overview", Some("acceptrequest_session=forged"), None).await.0,
+        s.call("GET", "/api/overview", Some("screentime_session=forged"), None).await.0,
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
@@ -284,7 +284,7 @@ async fn ntfy_buttons_answer_through_ntfy() {
         ..Config::default()
     })
     .await;
-    tokio::spawn(acceptrequest_server::notify::follow_replies(s.state.clone()));
+    tokio::spawn(screentime_server::notify::follow_replies(s.state.clone()));
     let pc1 = db::add_client(&s.state.db, "pc1").await.unwrap();
     let (status, _, _) = s
         .call("POST", "/api/client/requests", Some(&pc1), Some(json!({"username": "kid", "host": "pc1", "requested_minutes": 45, "reason": "finish the level"})))

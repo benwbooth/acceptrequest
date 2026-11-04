@@ -5,13 +5,13 @@ self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim(
 
 self.addEventListener("push", (event) => {
   let data = {};
-  try { data = event.data ? event.data.json() : {}; } catch (_) { data = { title: "acceptrequest", body: event.data && event.data.text() }; }
+  try { data = event.data ? event.data.json() : {}; } catch (_) { data = { title: "screentime", body: event.data && event.data.text() }; }
   const actions = (data.actions || []).slice(0, 2).map((a, i) => ({ action: "a" + i, title: a.title }));
-  event.waitUntil(self.registration.showNotification(data.title || "acceptrequest", {
+  event.waitUntil(self.registration.showNotification(data.title || "screentime", {
     body: data.body || "",
     icon: "/icon-192.png",
     badge: "/icon-192.png",
-    tag: data.url || "acceptrequest",
+    tag: data.url || "screentime",
     requireInteraction: true,
     actions,
     data,
@@ -27,9 +27,9 @@ self.addEventListener("notificationclick", (event) => {
     event.waitUntil(
       fetch(action.url, { method: "POST" })
         .then((r) => self.registration.showNotification(r.ok ? "Done: " + action.title : "Couldn't add the time", {
-          body: r.ok ? "" : "Open acceptrequest to try again.",
+          body: r.ok ? "" : "Open screentime to try again.",
           icon: "/icon-192.png",
-          tag: "acceptrequest-result",
+          tag: "screentime-result",
         }))
         .catch(() => self.clients.openWindow(data.url || "/"))
     );

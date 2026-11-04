@@ -199,10 +199,10 @@ pub struct UsageReport {
 }
 
 /// Path of the local socket the client daemon listens on for PAM and greeter queries.
-pub const CLIENT_SOCKET: &str = "/run/acceptrequest/client.sock";
+pub const CLIENT_SOCKET: &str = "/run/screentime/client.sock";
 
 /// The Windows service's named pipe, serving the same protocol as `CLIENT_SOCKET`.
-pub const CLIENT_PIPE: &str = r"\\.\pipe\acceptrequest";
+pub const CLIENT_PIPE: &str = r"\\.\pipe\screentime";
 
 /// One JSON line sent to the client daemon socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,5 +1,5 @@
 {
-  description = "acceptrequest: screen time limits, downtime schedules and time requests for Linux";
+  description = "screentime: screen time limits, downtime schedules and time requests for Linux";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -50,18 +50,18 @@
         rec {
           # The Leptos UI, compiled to WebAssembly.
           web = pkgs.rustPlatform.buildRustPackage {
-            pname = "acceptrequest-web";
+            pname = "screentime-web";
             version = "0.1.0";
             src = pkgs.lib.cleanSource ./.;
             inherit cargoDeps;
             nativeBuildInputs = [ pkgs.wasm-bindgen-cli pkgs.lld pkgs.rsync ];
-            buildPhase = persistentCargo "acceptrequest-web"
-              "--profile wasm-release --target wasm32-unknown-unknown -p acceptrequest-web";
+            buildPhase = persistentCargo "screentime-web"
+              "--profile wasm-release --target wasm32-unknown-unknown -p screentime-web";
             installPhase = ''
               runHook preInstall
               mkdir -p $out
               wasm-bindgen --target web --no-typescript --out-dir $out \
-                target/wasm32-unknown-unknown/wasm-release/acceptrequest_web.wasm
+                target/wasm32-unknown-unknown/wasm-release/screentime_web.wasm
               cp crates/web/static/* $out/
               runHook postInstall
             '';
@@ -69,21 +69,21 @@
           };
 
           default = pkgs.rustPlatform.buildRustPackage {
-            pname = "acceptrequest";
+            pname = "screentime";
             version = "0.1.0";
             src = pkgs.lib.cleanSource ./.;
             inherit cargoDeps;
             nativeBuildInputs = [ pkgs.mold pkgs.rsync ];
             buildInputs = [ pkgs.pam ];
             CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
-            buildPhase = persistentCargo "acceptrequest"
-              "--release --workspace --exclude acceptrequest-web --exclude acceptrequest-windows --exclude acceptrequest-credprov";
+            buildPhase = persistentCargo "screentime"
+              "--release --workspace --exclude screentime-web --exclude screentime-windows --exclude screentime-credprov";
             installPhase = ''
               runHook preInstall
-              install -Dm755 -t $out/bin target/release/{acceptrequest,acceptrequest-client,acceptrequest-greeter,acceptrequest-server}
-              install -Dm755 target/release/libpam_acceptrequest.so $out/lib/security/pam_acceptrequest.so
-              mkdir -p $out/share/acceptrequest
-              ln -s ${web} $out/share/acceptrequest/web
+              install -Dm755 -t $out/bin target/release/{screentime,screentime-client,screentime-greeter,screentime-server}
+              install -Dm755 target/release/libpam_screentime.so $out/lib/security/pam_screentime.so
+              mkdir -p $out/share/screentime
+              ln -s ${web} $out/share/screentime/web
               runHook postInstall
             '';
             doCheck = false;

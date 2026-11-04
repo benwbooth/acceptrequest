@@ -1,4 +1,4 @@
-# acceptrequest
+# screentime
 
 Screen time controls for Linux, in the spirit of Windows Family Safety: daily allowances,
 downtime schedules, and kids asking for more time with a notification on your phone.
@@ -12,7 +12,7 @@ downtime schedules, and kids asking for more time with a notification on your ph
 | `crates/server` | Axum + SQLite policy server over HTTPS, password protected. Hosts the web UI and sends Web Push (or ntfy) notifications with one-tap grant buttons. |
 | `crates/web` | Leptos admin UI with desktop and mobile layouts: downtime schedules, allowances, bonus time (+0/15/30/45/60/custom minutes), pending requests. |
 | `crates/client` | Root daemon on each machine. Tracks active time through logind, warns at 10/5/1 minutes, locks then terminates sessions, caches policy for offline use. |
-| `crates/pam` | `pam_acceptrequest.so`, an account-phase module that blocks login outside allowed time by asking the local daemon. |
+| `crates/pam` | `pam_screentime.so`, an account-phase module that blocks login outside allowed time by asking the local daemon. |
 | `crates/greeter` | greetd greeter with a "Request more time" button. |
 | `crates/windows` | Windows client: a service (same agent as Linux) and a tray app with the warning toast. |
 | `crates/common` | Shared types. |
@@ -20,7 +20,7 @@ downtime schedules, and kids asking for more time with a notification on your ph
 ## Windows
 
 Build the installer zip from Linux with `crates/windows/build-windows.sh` (MinGW from nixpkgs);
-it lands in `target/windows-dist/acceptrequest-windows.zip`. On the PC, unzip it and run from an
+it lands in `target/windows-dist/screentime-windows.zip`. On the PC, unzip it and run from an
 administrator PowerShell:
 
 ```powershell
@@ -28,46 +28,46 @@ powershell -ExecutionPolicy Bypass -File install.ps1 `
   -Server https://benwbooth-nixos.duckdns.org:8443 -Token <token> -Users chloe
 ```
 
-Get the token from the web UI (Computers > Add) or `acceptrequest-server add-client <hostname>`.
+Get the token from the web UI (Computers > Add) or `screentime-server add-client <hostname>`.
 The kid's account must be a standard user. `uninstall.ps1` removes everything and resets their
 sign-in hours.
 
-- **Service** (`acceptrequest-service.exe`, runs as SYSTEM, also in Safe Mode): counts time while
+- **Service** (`screentime-service.exe`, runs as SYSTEM, also in Safe Mode): counts time while
   the kid's session is unlocked, warns at 10/5/1 minutes, then disconnects the session to the
   sign-in screen and logs it off after the grace period. It writes the schedule into the account's
   **Windows logon hours**, so Windows itself refuses sign-in during downtime or once the day's time
   is used, even if the service isn't running.
-- **Tray app** (`acceptrequest-tray.exe`, started in the kid's session by the service): the warning
+- **Tray app** (`screentime-tray.exe`, started in the kid's session by the service): the warning
   toast in the lower-right corner (click-through, never takes focus), and a tray menu to ask for
   15/30/60 more minutes or for "My parent is here", which opens the Windows credential prompt for
-  an administrator account. `acceptrequest-tray.exe --preview` shows the toast.
-- **Sign-in screen tile** (`acceptrequest_credprov.dll`, a Credential Provider): a "Screen time"
+  an administrator account. `screentime-tray.exe --preview` shows the toast.
+- **Sign-in screen tile** (`screentime_credprov.dll`, a Credential Provider): a "Screen time"
   tile on the sign-in and lock screens that shows where each limited account stands, lets the kid
   ask for 15/30/60 more minutes, and lets a parent who is there add time with an administrator
   account and password. It never signs anyone in, and only appears when the service is running
   and the computer has limited accounts.
-- **CLI** (`acceptrequest.exe status|users|request|parent`) works over the service's named pipe.
+- **CLI** (`screentime.exe status|users|request|parent`) works over the service's named pipe.
 
 ## Building
 
 `cargo build` uses your normal Cargo setup (kache, if `~/.cargo/config.toml` has it). The web UI
 is built with `crates/web/build.sh`. `nix build` compiles in a persistent target directory,
-`/var/tmp/cargo-nix/acceptrequest` (and `-web`), when the sandbox exposes `/var/tmp/cargo-nix`
+`/var/tmp/cargo-nix/screentime` (and `-web`), when the sandbox exposes `/var/tmp/cargo-nix`
 (`nix.settings.extra-sandbox-paths = [ "/var/tmp/cargo-nix?" ]`), so a rebuild only recompiles
 what changed; otherwise it builds from scratch in the sandbox.
 
 ## NixOS
 
 ```nix
-inputs.acceptrequest.url = "github:benwbooth/acceptrequest";
+inputs.screentime.url = "github:benwbooth/screentime";
 
 # on the server
-imports = [ acceptrequest.nixosModules.server ];
-services.acceptrequest.server.enable = true;
+imports = [ screentime.nixosModules.server ];
+services.screentime.server.enable = true;
 
 # on each client
-imports = [ acceptrequest.nixosModules.client ];
-services.acceptrequest.client = {
+imports = [ screentime.nixosModules.client ];
+services.screentime.client = {
   enable = true;
   serverUrl = "https://screentime.example:8443";
   managedUsers = [ "kid" ];
@@ -79,8 +79,8 @@ services.acceptrequest.client = {
 
 - **Client daemon:** working. Counts unlocked session time through logind, warns at 10/5/1 minutes
   to subscribers on its socket, locks sessions when time runs out and ends them after a grace period,
-  caches policy in `/var/lib/acceptrequest/state.json`, syncs with the server, queues time requests.
-- **"My parent is here":** working in the daemon and the `acceptrequest` command; a parent's
+  caches policy in `/var/lib/screentime/state.json`, syncs with the server, queues time requests.
+- **"My parent is here":** working in the daemon and the `screentime` command; a parent's
   admin password adds time on the spot, even during downtime or offline.
 - **PAM module:** working. Fails closed for managed users and shows the reason at login.
 - **NixOS client module:** working, with assertions against the boot menu editor and managed users in wheel.
@@ -96,27 +96,27 @@ services.acceptrequest.client = {
 ## Setting up the server
 
 ```sh
-acceptrequest-server hash-password > admin.hash      # then point adminPasswordHashFile at it
-acceptrequest-server gen-cert /var/lib/acceptrequest-tls screentime.lan 192.168.1.10
-acceptrequest-server add-client kids-pc              # prints the token for that machine's tokenFile
+screentime-server hash-password > admin.hash      # then point adminPasswordHashFile at it
+screentime-server gen-cert /var/lib/screentime-tls screentime.lan 192.168.1.10
+screentime-server add-client kids-pc              # prints the token for that machine's tokenFile
 ```
 
 `gen-cert` makes a certificate for the names and addresses you list and prints its fingerprint.
 Computers trust the server by that fingerprint, so there is nothing to install on them:
 
 ```nix
-services.acceptrequest.client.serverFingerprint = "1F:E7:E4:...:3E:6A";
+services.screentime.client.serverFingerprint = "1F:E7:E4:...:3E:6A";
 ```
 
 The fingerprint changes each time you run `gen-cert`; the server also logs it at startup, and
-`acceptrequest-server fingerprint cert.pem` prints it.
+`screentime-server fingerprint cert.pem` prints it.
 
 **Easiest: a free DuckDNS name.** If you have one, the server can get a real Let's Encrypt
 certificate through a DNS challenge, without being reachable from the internet. Phones and
 computers then trust it with nothing to install or pin, and built-in notifications work:
 
 ```nix
-services.acceptrequest.server.duckdns = {
+services.screentime.server.duckdns = {
   domain = "yourname.duckdns.org";
   tokenFile = "/run/secrets/duckdns_token";   # just the token
   email = "you@example.com";
@@ -144,8 +144,8 @@ Security > Install a certificate > CA certificate).
 There are two ways to get time requests on your phone; you can use either or both.
 
 **ntfy (works with a self-signed certificate).** Install the ntfy app, subscribe to a long random
-topic such as `https://ntfy.sh/acceptrequest-k3v9q2x7...`, and set
-`services.acceptrequest.server.ntfy.url` to it. Requests arrive with up to three +N buttons. A
+topic such as `https://ntfy.sh/screentime-k3v9q2x7...`, and set
+`services.screentime.server.ntfy.url` to it. Requests arrive with up to three +N buttons. A
 button posts its answer to `<topic>-answers` on ntfy, which the server follows, so the phone never
 connects to the server: the buttons work from anywhere and no certificate has to be trusted.
 Each answer carries a single-use secret, so only buttons from a real notification can grant time.
@@ -158,12 +158,12 @@ notifications". This needs a certificate the phone trusts (Let's Encrypt, or `ca
 on the phone). On iPhone, first add the page to the Home Screen and open it from there.
 
 ```nix
-services.acceptrequest.server = {
+services.screentime.server = {
   enable = true;
   openFirewall = true;
   publicUrl = "https://screentime.example.net:8443";
-  tls = { certFile = "/var/lib/acceptrequest-tls/cert.pem"; keyFile = "/var/lib/acceptrequest-tls/key.pem"; };
-  adminPasswordHashFile = "/run/secrets/acceptrequest-admin-hash";
+  tls = { certFile = "/var/lib/screentime-tls/cert.pem"; keyFile = "/var/lib/screentime-tls/key.pem"; };
+  adminPasswordHashFile = "/run/secrets/screentime-admin-hash";
 };
 ```
 

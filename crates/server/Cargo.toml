@@ -1,12 +1,12 @@
 [package]
-name = "acceptrequest-server"
+name = "screentime-server"
 description = "Policy server: SQLite store, HTTPS API, Leptos UI host, ntfy notifications"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-acceptrequest-common.workspace = true
+screentime-common.workspace = true
 anyhow.workspace = true
 argon2 = { version = "0.5", features = ["std"] }
 axum = "0.8"

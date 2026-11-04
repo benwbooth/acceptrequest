@@ -1,8 +1,8 @@
-//! The acceptrequest admin UI: a Leptos single-page app talking to the server's JSON API.
+//! The screentime admin UI: a Leptos single-page app talking to the server's JSON API.
 
 mod api;
 
-use acceptrequest_common::{Decision, DenyReason, DowntimeWindow};
+use screentime_common::{Decision, DenyReason, DowntimeWindow};
 use api::{ApiError, Overview, RequestRow, UserOverview};
 use chrono::{NaiveTime, Weekday};
 use leptos::prelude::*;
@@ -662,7 +662,7 @@ fn MachinesView() -> impl IntoView {
             view! {
                 <div class="card token">
                     <h3>{format!("Token for {}", t.hostname)}</h3>
-                    <p class="muted small">"Shown only once. Put it in a file on that computer and point services.acceptrequest.client.tokenFile at it."</p>
+                    <p class="muted small">"Shown only once. Put it in a file on that computer and point services.screentime.client.tokenFile at it."</p>
                     <code class="token-value">{t.token.clone()}</code>
                     <div class="row">
                         <button class="ghost" on:click=move |_| {

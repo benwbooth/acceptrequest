@@ -1,4 +1,4 @@
-//! `pam_acceptrequest.so`: account-phase module. Asks the local client daemon
+//! `pam_screentime.so`: account-phase module. Asks the local client daemon
 //! whether the user may log in now, so login stays fast and works offline.
 //!
 //! Module arguments:
@@ -9,7 +9,7 @@
 //! For a managed user, anything other than an explicit "allowed" from the daemon denies the
 //! login: no daemon, a timeout, a garbled reply, or a panic in this module.
 
-use acceptrequest_common::{CLIENT_SOCKET, Decision, SocketRequest, SocketResponse};
+use screentime_common::{CLIENT_SOCKET, Decision, SocketRequest, SocketResponse};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -169,7 +169,7 @@ pub unsafe extern "C" fn pam_sm_acct_mgmt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acceptrequest_common::DenyReason;
+    use screentime_common::DenyReason;
     use std::os::unix::net::UnixListener;
 
     fn fake_daemon(reply: &'static str) -> (tempfile::TempDir, String) {

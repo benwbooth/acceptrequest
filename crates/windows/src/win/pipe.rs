@@ -1,7 +1,7 @@
 //! The service's named pipe: the same JSON-lines protocol as the Linux Unix socket.
 
 use super::{pcwstr, wide};
-use acceptrequest_client::agent::{Agent, Platform};
+use screentime_client::agent::{Agent, Platform};
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};

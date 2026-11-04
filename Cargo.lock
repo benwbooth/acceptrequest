@@ -3,126 +3,6 @@
 version = 4
 
 [[package]]
-name = "acceptrequest-client"
-version = "0.1.0"
-dependencies = [
- "acceptrequest-common",
- "anyhow",
- "chrono",
- "hex",
- "libc",
- "reqwest",
- "rpassword",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zbus",
-]
-
-[[package]]
-name = "acceptrequest-common"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "acceptrequest-credprov"
-version = "0.1.0"
-dependencies = [
- "acceptrequest-common",
- "embed-resource",
- "serde_json",
- "windows",
- "windows-core 0.61.2",
-]
-
-[[package]]
-name = "acceptrequest-greeter"
-version = "0.1.0"
-dependencies = [
- "acceptrequest-common",
- "anyhow",
- "greetd_ipc",
-]
-
-[[package]]
-name = "acceptrequest-server"
-version = "0.1.0"
-dependencies = [
- "acceptrequest-common",
- "anyhow",
- "argon2",
- "axum",
- "axum-server",
- "base64ct",
- "chrono",
- "hex",
- "http",
- "http-body-util",
- "rand 0.9.5",
- "rcgen",
- "reqwest",
- "rpassword",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "tempfile",
- "time",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "web-push-native",
-]
-
-[[package]]
-name = "acceptrequest-web"
-version = "0.1.0"
-dependencies = [
- "acceptrequest-common",
- "chrono",
- "console_error_panic_hook",
- "gloo-net",
- "gloo-timers",
- "js-sys",
- "leptos",
- "serde",
- "serde_json",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "acceptrequest-windows"
-version = "0.1.0"
-dependencies = [
- "acceptrequest-client",
- "acceptrequest-common",
- "anyhow",
- "chrono",
- "embed-resource",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "windows",
- "windows-service",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2632,11 +2512,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "pam_acceptrequest"
+name = "pam_screentime"
 version = "0.1.0"
 dependencies = [
- "acceptrequest-common",
  "libc",
+ "screentime-common",
  "serde_json",
  "tempfile",
 ]
@@ -3417,6 +3297,126 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "screentime-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hex",
+ "libc",
+ "reqwest",
+ "rpassword",
+ "rustls",
+ "screentime-common",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
+name = "screentime-common"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "screentime-credprov"
+version = "0.1.0"
+dependencies = [
+ "embed-resource",
+ "screentime-common",
+ "serde_json",
+ "windows",
+ "windows-core 0.61.2",
+]
+
+[[package]]
+name = "screentime-greeter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "greetd_ipc",
+ "screentime-common",
+]
+
+[[package]]
+name = "screentime-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "axum",
+ "axum-server",
+ "base64ct",
+ "chrono",
+ "hex",
+ "http",
+ "http-body-util",
+ "rand 0.9.5",
+ "rcgen",
+ "reqwest",
+ "rpassword",
+ "rustls",
+ "screentime-common",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "time",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "web-push-native",
+]
+
+[[package]]
+name = "screentime-web"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "console_error_panic_hook",
+ "gloo-net",
+ "gloo-timers",
+ "js-sys",
+ "leptos",
+ "screentime-common",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "screentime-windows"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "embed-resource",
+ "screentime-client",
+ "screentime-common",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "windows",
+ "windows-service",
+]
 
 [[package]]
 name = "sec1"

@@ -1,14 +1,14 @@
-use acceptrequest_server::{AppState, config::Config, db, open_db, router};
+use screentime_server::{AppState, config::Config, db, open_db, router};
 use anyhow::{Context, Result};
 use std::io::{BufRead, IsTerminal};
 
 const USAGE: &str = "usage:
-  acceptrequest-server [serve]          run the server (configured by ACCEPTREQUEST_* variables)
-  acceptrequest-server hash-password    read a password and print its hash for ACCEPTREQUEST_ADMIN_PASSWORD_HASH
-  acceptrequest-server gen-cert DIR NAME...  make a private CA and a server certificate for NAME (host names / IPs)
-  acceptrequest-server fingerprint CERT.pem  print a certificate's fingerprint for clients' serverFingerprint
-  acceptrequest-server add-client HOST  register a machine and print its token (replaces any old one)
-  acceptrequest-server list-clients";
+  screentime-server [serve]          run the server (configured by SCREENTIME_* variables)
+  screentime-server hash-password    read a password and print its hash for SCREENTIME_ADMIN_PASSWORD_HASH
+  screentime-server gen-cert DIR NAME...  make a private CA and a server certificate for NAME (host names / IPs)
+  screentime-server fingerprint CERT.pem  print a certificate's fingerprint for clients' serverFingerprint
+  screentime-server add-client HOST  register a machine and print its token (replaces any old one)
+  screentime-server list-clients";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -31,11 +31,11 @@ async fn main() -> Result<()> {
             } else {
                 std::io::stdin().lock().lines().next().context("no password on stdin")??
             };
-            let min = acceptrequest_server::admin::MIN_PASSWORD_CHARS;
+            let min = screentime_server::admin::MIN_PASSWORD_CHARS;
             if password.chars().count() < min {
                 anyhow::bail!("use at least {min} characters");
             }
-            println!("{}", acceptrequest_server::auth::hash_password(&password)?);
+            println!("{}", screentime_server::auth::hash_password(&password)?);
             Ok(())
         }
         ["add-client", host] => {
@@ -46,10 +46,10 @@ async fn main() -> Result<()> {
         }
         ["gen-cert", dir, names @ ..] => {
             let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
-            acceptrequest_server::certs::generate(std::path::Path::new(dir), &names)
+            screentime_server::certs::generate(std::path::Path::new(dir), &names)
         }
         ["fingerprint", cert] => {
-            println!("{}", acceptrequest_server::certs::pem_fingerprint(std::path::Path::new(cert))?);
+            println!("{}", screentime_server::certs::pem_fingerprint(std::path::Path::new(cert))?);
             Ok(())
         }
         ["list-clients"] => {
@@ -74,10 +74,10 @@ async fn serve() -> Result<()> {
     }
 
     let pool = open_db(&config.db_url).await?;
-    let addr: std::net::SocketAddr = config.listen.parse().context("ACCEPTREQUEST_LISTEN")?;
+    let addr: std::net::SocketAddr = config.listen.parse().context("SCREENTIME_LISTEN")?;
     let tls = config.tls.clone();
     let state = AppState::new(pool, config);
-    tokio::spawn(acceptrequest_server::notify::follow_replies(state.clone()));
+    tokio::spawn(screentime_server::notify::follow_replies(state.clone()));
     let app = router(state).into_make_service();
 
     match tls {
@@ -86,7 +86,7 @@ async fn serve() -> Result<()> {
             let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
                 .await
                 .with_context(|| format!("loading TLS cert {} and key {}", cert.display(), key.display()))?;
-            match acceptrequest_server::certs::pem_fingerprint(&cert) {
+            match screentime_server::certs::pem_fingerprint(&cert) {
                 Ok(f) => tracing::info!("certificate fingerprint (for clients' serverFingerprint): {f}"),
                 Err(e) => tracing::warn!("couldn't fingerprint the certificate: {e:#}"),
             }

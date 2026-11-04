@@ -3,9 +3,9 @@
 
 use super::{from_wide, pcwstr, wide};
 use crate::logon_hours;
-use acceptrequest_client::agent::{Platform, Session};
-use acceptrequest_client::state::State;
-use acceptrequest_common::Decision;
+use screentime_client::agent::{Platform, Session};
+use screentime_client::state::State;
+use screentime_common::Decision;
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Local, Utc};
 use std::collections::HashMap;
@@ -35,13 +35,13 @@ use windows::core::PWSTR;
 
 /// Hours in Windows' weekly logon-hours map.
 const UNITS_PER_WEEK: u32 = 168;
-const TRAY_EXE: &str = "acceptrequest-tray.exe";
+const TRAY_EXE: &str = "screentime-tray.exe";
 /// Don't try to start the tray in a session more often than this.
 const TRAY_RETRY: Duration = Duration::from_secs(60);
 
 pub struct Windows {
     users: Vec<String>,
-    /// Mirror the schedule into Windows logon hours (on unless ACCEPTREQUEST_LOGON_HOURS=off).
+    /// Mirror the schedule into Windows logon hours (on unless SCREENTIME_LOGON_HOURS=off).
     use_logon_hours: bool,
     /// Last logon-hours map written for each user, so Windows is only told about changes.
     logon_hours: Mutex<HashMap<String, [u8; logon_hours::BYTES]>>,
@@ -55,7 +55,7 @@ impl Windows {
                 tracing::error!(user, "this account is an administrator; it can't be limited, so it will be ignored");
             }
         }
-        let use_logon_hours = !std::env::var("ACCEPTREQUEST_LOGON_HOURS").is_ok_and(|v| v.eq_ignore_ascii_case("off"));
+        let use_logon_hours = !std::env::var("SCREENTIME_LOGON_HOURS").is_ok_and(|v| v.eq_ignore_ascii_case("off"));
         if !use_logon_hours {
             tracing::warn!("logon hours are off: sign-in is only blocked while the service is running");
         }

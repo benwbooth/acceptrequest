@@ -48,7 +48,7 @@ impl Notifier {
                 if config.public_url.starts_with("https://") {
                     config.public_url.clone()
                 } else {
-                    "mailto:acceptrequest@example.invalid".to_owned()
+                    "mailto:screentime@example.invalid".to_owned()
                 }
             }),
         }

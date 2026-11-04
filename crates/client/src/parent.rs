@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn group_lookup() {
         assert!(in_group("root", "root"));
-        assert!(!in_group("root", "no-such-group-acceptrequest"));
-        assert!(!in_group("no-such-user-acceptrequest", "root"));
+        assert!(!in_group("root", "no-such-group-screentime"));
+        assert!(!in_group("no-such-user-screentime", "root"));
     }
 }

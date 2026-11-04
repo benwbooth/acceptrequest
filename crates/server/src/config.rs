@@ -18,7 +18,7 @@ pub struct Config {
     /// Topic the notification buttons answer on. Defaults to the ntfy topic plus `-answers`.
     pub ntfy_reply_url: Option<String>,
     pub vapid_subject: Option<String>,
-    /// The built web UI. Defaults to `../share/acceptrequest/web` next to the executable.
+    /// The built web UI. Defaults to `../share/screentime/web` next to the executable.
     pub web_dir: Option<PathBuf>,
     /// Daily minutes for a user the server hasn't seen before.
     pub default_allowance_minutes: u32,
@@ -47,37 +47,37 @@ impl Config {
         };
 
         let tls = match (
-            var_or_credential("ACCEPTREQUEST_TLS_CERT", "tls-cert"),
-            var_or_credential("ACCEPTREQUEST_TLS_KEY", "tls-key"),
+            var_or_credential("SCREENTIME_TLS_CERT", "tls-cert"),
+            var_or_credential("SCREENTIME_TLS_KEY", "tls-key"),
         ) {
             (Some(cert), Some(key)) => Some((cert.into(), key.into())),
             (None, None) => None,
-            _ => anyhow::bail!("set both ACCEPTREQUEST_TLS_CERT and ACCEPTREQUEST_TLS_KEY, or neither"),
+            _ => anyhow::bail!("set both SCREENTIME_TLS_CERT and SCREENTIME_TLS_KEY, or neither"),
         };
-        let listen = var("ACCEPTREQUEST_LISTEN").unwrap_or_else(|| "127.0.0.1:8443".into());
+        let listen = var("SCREENTIME_LISTEN").unwrap_or_else(|| "127.0.0.1:8443".into());
         let scheme = if tls.is_some() { "https" } else { "http" };
 
         Ok(Config {
-            public_url: var("ACCEPTREQUEST_PUBLIC_URL")
+            public_url: var("SCREENTIME_PUBLIC_URL")
                 .unwrap_or_else(|| format!("{scheme}://{listen}"))
                 .trim_end_matches('/')
                 .to_owned(),
             listen,
-            db_url: var("ACCEPTREQUEST_DB").unwrap_or_else(|| "sqlite://acceptrequest.db".into()),
+            db_url: var("SCREENTIME_DB").unwrap_or_else(|| "sqlite://screentime.db".into()),
             tls,
-            admin_password_hash: var("ACCEPTREQUEST_ADMIN_PASSWORD_HASH")
-                .or(from_file("ACCEPTREQUEST_ADMIN_PASSWORD_HASH_FILE", "admin-hash")?),
-            ntfy_url: var("ACCEPTREQUEST_NTFY_URL"),
-            ntfy_token: var("ACCEPTREQUEST_NTFY_TOKEN").or(from_file("ACCEPTREQUEST_NTFY_TOKEN_FILE", "ntfy-token")?),
-            ntfy_reply_url: var("ACCEPTREQUEST_NTFY_REPLY_URL"),
-            vapid_subject: var("ACCEPTREQUEST_VAPID_SUBJECT"),
-            web_dir: var("ACCEPTREQUEST_WEB_DIR").map(PathBuf::from).or_else(|| {
+            admin_password_hash: var("SCREENTIME_ADMIN_PASSWORD_HASH")
+                .or(from_file("SCREENTIME_ADMIN_PASSWORD_HASH_FILE", "admin-hash")?),
+            ntfy_url: var("SCREENTIME_NTFY_URL"),
+            ntfy_token: var("SCREENTIME_NTFY_TOKEN").or(from_file("SCREENTIME_NTFY_TOKEN_FILE", "ntfy-token")?),
+            ntfy_reply_url: var("SCREENTIME_NTFY_REPLY_URL"),
+            vapid_subject: var("SCREENTIME_VAPID_SUBJECT"),
+            web_dir: var("SCREENTIME_WEB_DIR").map(PathBuf::from).or_else(|| {
                 let exe = std::env::current_exe().ok()?;
-                let dir = exe.parent()?.parent()?.join("share/acceptrequest/web");
+                let dir = exe.parent()?.parent()?.join("share/screentime/web");
                 dir.join("index.html").exists().then_some(dir)
             }),
-            default_allowance_minutes: match var("ACCEPTREQUEST_DEFAULT_ALLOWANCE") {
-                Some(m) => m.parse().context("ACCEPTREQUEST_DEFAULT_ALLOWANCE")?,
+            default_allowance_minutes: match var("SCREENTIME_DEFAULT_ALLOWANCE") {
+                Some(m) => m.parse().context("SCREENTIME_DEFAULT_ALLOWANCE")?,
                 None => 120,
             },
         })

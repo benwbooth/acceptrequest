@@ -1,13 +1,13 @@
 [package]
-name = "acceptrequest-windows"
+name = "screentime-windows"
 description = "Windows client: a service that enforces screen time and a tray app for the kid's session"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-acceptrequest-client = { path = "../client" }
-acceptrequest-common.workspace = true
+screentime-client = { path = "../client" }
+screentime-common.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 serde_json.workspace = true

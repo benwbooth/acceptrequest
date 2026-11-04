@@ -1,5 +1,5 @@
 [package]
-name = "pam_acceptrequest"
+name = "pam_screentime"
 description = "PAM account module that denies login outside allowed screen time"
 version.workspace = true
 edition.workspace = true
@@ -9,7 +9,7 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-acceptrequest-common.workspace = true
+screentime-common.workspace = true
 libc = "0.2"
 serde_json.workspace = true
 

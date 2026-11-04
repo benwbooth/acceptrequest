@@ -1,6 +1,6 @@
 //! JSON types and calls for the server's admin API.
 
-use acceptrequest_common::{Decision, DowntimeWindow};
+use screentime_common::{Decision, DowntimeWindow};
 use chrono::NaiveDate;
 use gloo_net::http::{Request, Response};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};

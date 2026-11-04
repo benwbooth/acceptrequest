@@ -1,2 +1,2 @@
-import init from "/acceptrequest_web.js";
+import init from "/screentime_web.js";
 init();

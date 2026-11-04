@@ -1,12 +1,12 @@
 [package]
-name = "acceptrequest-client"
+name = "screentime-client"
 description = "Per-machine daemon: tracks active time via logind, warns, locks and terminates sessions"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-acceptrequest-common.workspace = true
+screentime-common.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 libc = "0.2"

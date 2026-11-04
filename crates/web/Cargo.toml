@@ -1,5 +1,5 @@
 [package]
-name = "acceptrequest-web"
+name = "screentime-web"
 description = "Leptos admin UI (desktop and mobile layouts), built to WebAssembly"
 version.workspace = true
 edition.workspace = true
@@ -9,7 +9,7 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-acceptrequest-common.workspace = true
+screentime-common.workspace = true
 chrono = { workspace = true }
 console_error_panic_hook = "0.1"
 gloo-net = { version = "0.6", default-features = false, features = ["http", "json"] }

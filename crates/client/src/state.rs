@@ -1,6 +1,6 @@
 //! Persistent daemon state: cached policies, today's usage and unsent time requests.
 
-use acceptrequest_common::{Decision, Policy, TimeRequest, apply_override, evaluate};
+use screentime_common::{Decision, Policy, TimeRequest, apply_override, evaluate};
 use anyhow::{Context, Result};
 use chrono::{Duration, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};

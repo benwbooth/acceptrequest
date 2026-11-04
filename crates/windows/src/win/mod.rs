@@ -21,4 +21,4 @@ pub fn from_wide(w: &[u16]) -> String {
 }
 
 /// Where the service keeps its configuration, state and log.
-pub const DATA_DIR: &str = r"C:\ProgramData\acceptrequest";
+pub const DATA_DIR: &str = r"C:\ProgramData\screentime";

@@ -3,10 +3,10 @@
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use acceptrequest_client::agent::{Agent, Platform, Session};
-    use acceptrequest_client::config::Config;
-    use acceptrequest_client::logind::Logind;
-    use acceptrequest_client::parent;
+    use screentime_client::agent::{Agent, Platform, Session};
+    use screentime_client::config::Config;
+    use screentime_client::logind::Logind;
+    use screentime_client::parent;
     use anyhow::{Context, Result};
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
@@ -112,6 +112,6 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
-    eprintln!("acceptrequest-client is the Linux daemon; on Windows use acceptrequest-service.");
+    eprintln!("screentime-client is the Linux daemon; on Windows use screentime-service.");
     std::process::exit(1);
 }

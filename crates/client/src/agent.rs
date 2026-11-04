@@ -4,7 +4,7 @@
 use crate::config::Config;
 use crate::server::ServerApi;
 use crate::state::State;
-use acceptrequest_common::{
+use screentime_common::{
     Decision, DenyReason, SocketRequest, SocketResponse, TimeRequest, UsageReport, UserStatus, WARNING_THRESHOLDS,
 };
 use anyhow::Result;
@@ -118,7 +118,7 @@ impl<P: Platform> Agent<P> {
                 None
             }
         };
-        tracing::info!(users = ?config.users, host = %config.host, "acceptrequest client starting");
+        tracing::info!(users = ?config.users, host = %config.host, "screentime client starting");
         // If the clock is now earlier than the last time we trusted, it was set back.
         let offset = match state.trusted_time {
             Some(trusted) if trusted - Utc::now() > CLOCK_TOLERANCE => {

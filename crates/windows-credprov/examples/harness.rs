@@ -1,9 +1,9 @@
 //! Drives the credential provider the way LogonUI does, for testing without a sign-in screen:
-//! `harness.exe <path to acceptrequest_credprov.dll> [admin password]`.
+//! `harness.exe <path to screentime_credprov.dll> [admin password]`.
 
 #[cfg(windows)]
 mod harness {
-    use acceptrequest_credprov::CLSID_STR;
+    use screentime_credprov::CLSID_STR;
     use std::ffi::c_void;
     use windows::Win32::Foundation::{HWND, HMODULE};
     use windows::Win32::Graphics::Gdi::HBITMAP;

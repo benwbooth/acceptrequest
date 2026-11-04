@@ -1,5 +1,5 @@
 [package]
-name = "acceptrequest-credprov"
+name = "screentime-credprov"
 description = "Windows Credential Provider: a Screen time tile on the sign-in screen to ask for more time"
 version.workspace = true
 edition.workspace = true
@@ -9,7 +9,7 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-acceptrequest-common.workspace = true
+screentime-common.workspace = true
 serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]

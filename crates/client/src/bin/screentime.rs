@@ -1,14 +1,14 @@
 //! Command-line front end to the client daemon, for terminals and SSH.
 
-use acceptrequest_common::{CLIENT_SOCKET, Decision, SocketRequest, SocketResponse};
+use screentime_common::{CLIENT_SOCKET, Decision, SocketRequest, SocketResponse};
 use anyhow::{Context, Result, bail};
 use std::io::{BufRead, BufReader, Write};
 
 const USAGE: &str = "usage:
-  acceptrequest status [USER]
-  acceptrequest users                           every limited account on this computer
-  acceptrequest request [MINUTES] [REASON...]   ask a parent for more time
-  acceptrequest parent USER MINUTES             my parent is here: approve time with an admin password";
+  screentime status [USER]
+  screentime users                           every limited account on this computer
+  screentime request [MINUTES] [REASON...]   ask a parent for more time
+  screentime parent USER MINUTES             my parent is here: approve time with an admin password";
 
 #[cfg(unix)]
 fn connect(path: &str) -> std::io::Result<std::os::unix::net::UnixStream> {
@@ -22,8 +22,8 @@ fn connect(path: &str) -> std::io::Result<std::fs::File> {
 }
 
 fn send(request: &SocketRequest) -> Result<SocketResponse> {
-    let default = if cfg!(windows) { acceptrequest_common::CLIENT_PIPE } else { CLIENT_SOCKET };
-    let socket = std::env::var("ACCEPTREQUEST_SOCKET").unwrap_or_else(|_| default.into());
+    let default = if cfg!(windows) { screentime_common::CLIENT_PIPE } else { CLIENT_SOCKET };
+    let socket = std::env::var("SCREENTIME_SOCKET").unwrap_or_else(|_| default.into());
     let mut stream = connect(&socket).with_context(|| format!("connecting to {socket}"))?;
     let mut line = serde_json::to_vec(request)?;
     line.push(b'\n');

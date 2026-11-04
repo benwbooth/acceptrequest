@@ -5,7 +5,7 @@
 The greeter is not the security boundary. A managed user who skips it (switching to a TTY,
 SSH, another display manager, `su`) must hit the same wall, so enforcement is layered:
 
-1. **PAM on every login path.** The client NixOS module adds `pam_acceptrequest.so` as a
+1. **PAM on every login path.** The client NixOS module adds `pam_screentime.so` as a
    `required` account rule to `login`, `greetd`, `sshd`, `su`, `sudo`, `systemd-user` and any
    other service that can start a session for a managed user. Outside allowed time the module
    denies the login whichever front end asked.
@@ -46,10 +46,10 @@ Warnings at 10, 5 and 1 minutes must not steal focus from a fullscreen game.
 
 When a parent is physically present they can add time without the phone or the server.
 
-- The greeter, the in-session overlay, or the `acceptrequest parent USER MINUTES` command sends the
+- The greeter, the in-session overlay, or the `screentime parent USER MINUTES` command sends the
   parent's account name and password to the root daemon over its local socket.
 - The daemon checks that the account is in the admin group (`wheel` by default), is not a managed
-  account and is not root, then verifies the password through the `acceptrequest` PAM service
+  account and is not root, then verifies the password through the `screentime` PAM service
   (plain unix password, no fingerprint, because the daemon answers the prompts itself).
 - A grant adds its minutes to today's allowance and also lets the user stay on through downtime
   for that long. Grants made back to back stack. It works even before the machine has ever
@@ -61,7 +61,7 @@ When a parent is physically present they can add time without the phone or the s
 
 ## Windows
 
-The Windows service runs the same agent as the Linux daemon (`acceptrequest-client`'s `agent`
+The Windows service runs the same agent as the Linux daemon (`screentime-client`'s `agent`
 module) behind a `Platform` implementation:
 
 - Sessions come from WTS (`WTSEnumerateSessionsW`); a session counts as in use when it is
@@ -74,7 +74,7 @@ module) behind a `Platform` implementation:
   accounts.
 - "My parent is here" uses `LogonUserW` and checks the token for BUILTIN\Administrators (present,
   deny-only, even in a UAC-filtered token), so a local or Microsoft-account administrator works.
-- The named pipe `\\.\pipe\acceptrequest` speaks the same JSON lines as the Unix socket and is
+- The named pipe `\\.\pipe\screentime` speaks the same JSON lines as the Unix socket and is
   open to signed-in users only.
 - Tamper resistance relies on the kid being a standard user: the service, its files and its data
   directory are writable only by SYSTEM and administrators, it restarts on failure and is
@@ -82,7 +82,7 @@ module) behind a `Platform` implementation:
 
 ### Windows sign-in screen tile
 
-`acceptrequest_credprov.dll` is a Credential Provider loaded by LogonUI (as SYSTEM) for the sign-in
+`screentime_credprov.dll` is a Credential Provider loaded by LogonUI (as SYSTEM) for the sign-in
 and unlock screens. It shows one extra "Screen time" tile (never the default, never auto-selected)
 and never returns a credential: its submit button reports the result of a "My parent is here"
 grant as a status message. Every entry point catches panics and every pipe call runs on a worker
@@ -99,7 +99,7 @@ If it ever did stop the sign-in screen working, remove
 |---|---|
 | Stop, reconfigure or delete the service | Kid is a standard user; the service's ACL lets signed-in users only query it. It runs as SYSTEM and restarts on failure. |
 | Kill the tray app | Only the warnings go; the service relaunches it within a minute. Enforcement is in the service. |
-| Edit settings, token or usage | `C:\ProgramData\acceptrequest` is readable only by SYSTEM and administrators. |
+| Edit settings, token or usage | `C:\ProgramData\screentime` is readable only by SYSTEM and administrators. |
 | Set the clock back | The server's clock wins whenever it's reachable, and offline the clock can't go back past the last trusted time. Standard users can't change the clock anyway. |
 | Change the time zone | The installer takes that right away from standard users. |
 | Pull the network | The cached schedule keeps applying; with no schedule ever received, sign-in is refused. |

@@ -54,7 +54,7 @@ pub fn generate(dir: &Path, names: &[String]) -> Result<()> {
     } else {
         let key = KeyPair::generate()?;
         let mut params = CertificateParams::default();
-        params.distinguished_name.push(DnType::CommonName, "acceptrequest private CA");
+        params.distinguished_name.push(DnType::CommonName, "screentime private CA");
         params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
         params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
         params.not_before = now - Duration::days(1);
@@ -80,7 +80,7 @@ pub fn generate(dir: &Path, names: &[String]) -> Result<()> {
     println!(
         "Wrote cert.pem and key.pem for {} (valid {SERVER_DAYS} days).\n\n\
          Computers can trust this server by its fingerprint, with nothing to install:\n  \
-         services.acceptrequest.client.serverFingerprint = \"{}\";\n\
+         services.screentime.client.serverFingerprint = \"{}\";\n\
          (It changes whenever you run gen-cert again.)\n\n\
          For phone notifications the phone must trust the certificate: install ca.pem on it,\n\
          or use a certificate from Let's Encrypt or `tailscale cert` instead.",

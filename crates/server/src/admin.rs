@@ -5,7 +5,7 @@ use crate::client_api::valid_username;
 use crate::db::{self, Allowances, ClientRow, HostUsage, RequestRow};
 use crate::error::{AppError, AppResult};
 use crate::{AppState, push};
-use acceptrequest_common::{Decision, DowntimeWindow, evaluate};
+use screentime_common::{Decision, DowntimeWindow, evaluate};
 use axum::extract::{Path, Query, State};
 use axum::http::header::{COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, StatusCode};

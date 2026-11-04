@@ -1,5 +1,5 @@
 [package]
-name = "acceptrequest-common"
+name = "screentime-common"
 description = "Shared policy, request and API types"
 version.workspace = true
 edition.workspace = true

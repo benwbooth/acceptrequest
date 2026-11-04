@@ -1,11 +1,11 @@
-//! The Windows service. `acceptrequest-service run` runs it in the console for debugging.
+//! The Windows service. `screentime-service run` runs it in the console for debugging.
 
 #[cfg(windows)]
 mod service {
-    use acceptrequest_client::agent::Agent;
-    use acceptrequest_client::config::Config;
-    use acceptrequest_windows::win::platform::Windows;
-    use acceptrequest_windows::win::{DATA_DIR, pipe};
+    use screentime_client::agent::Agent;
+    use screentime_client::config::Config;
+    use screentime_windows::win::platform::Windows;
+    use screentime_windows::win::{DATA_DIR, pipe};
     use anyhow::{Context, Result};
     use std::ffi::OsString;
     use std::path::Path;
@@ -16,7 +16,7 @@ mod service {
     use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
     use windows_service::{define_windows_service, service_dispatcher};
 
-    pub const NAME: &str = "acceptrequest";
+    pub const NAME: &str = "screentime";
 
     /// Poked by the service control handler on sign-ins, unlocks and reconnects, so an
     /// out-of-time sign-in is caught at once rather than at the next 15-second tick.
@@ -29,7 +29,7 @@ mod service {
         let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
         for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
             if let Some((k, v)) = line.split_once('=')
-                && k.trim().starts_with("ACCEPTREQUEST_")
+                && k.trim().starts_with("SCREENTIME_")
             {
                 // Single-threaded here: this runs before the runtime starts.
                 unsafe { std::env::set_var(k.trim(), v.trim()) };
@@ -57,7 +57,7 @@ mod service {
         std::fs::create_dir_all(DATA_DIR)?;
         load_config_file()?;
         let mut config = Config::from_env()?;
-        if std::env::var_os("ACCEPTREQUEST_STATE_DIR").is_none() {
+        if std::env::var_os("SCREENTIME_STATE_DIR").is_none() {
             config.state_dir = DATA_DIR.into();
         }
         let pipe_name = config.socket.display().to_string();
@@ -146,6 +146,6 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("acceptrequest-service only runs on Windows.");
+    eprintln!("screentime-service only runs on Windows.");
     std::process::exit(1);
 }

@@ -5,8 +5,8 @@
 
 #[cfg(windows)]
 mod tray {
-    use acceptrequest_common::{CLIENT_PIPE, Decision, DenyReason, SocketRequest, SocketResponse};
-    use acceptrequest_windows::win::{from_wide, pcwstr, wide};
+    use screentime_common::{CLIENT_PIPE, Decision, DenyReason, SocketRequest, SocketResponse};
+    use screentime_windows::win::{from_wide, pcwstr, wide};
     use anyhow::{Context, Result};
     use std::io::{BufRead, BufReader, Write};
     use std::sync::Mutex;
@@ -119,7 +119,7 @@ mod tray {
                         // The first reply is the current status. If time is already short, the
                         // service's warning may have gone out before this app started.
                         SocketResponse::Decision { decision: Decision::Allowed { remaining_minutes: Some(m) }, .. }
-                            if m <= acceptrequest_common::WARNING_THRESHOLDS[0] =>
+                            if m <= screentime_common::WARNING_THRESHOLDS[0] =>
                         {
                             warn(m)
                         }
@@ -377,7 +377,7 @@ mod tray {
 
     pub fn main() -> Result<()> {
         let instance = unsafe { GetModuleHandleW(None) }?;
-        let (tray_class, toast_class) = (wide("AcceptRequestTray"), wide("AcceptRequestToast"));
+        let (tray_class, toast_class) = (wide("ScreenTimeTray"), wide("ScreenTimeToast"));
         register(&tray_class, tray_proc)?;
         register(&toast_class, toast_proc)?;
         let title = wide("Screen time");
@@ -435,6 +435,6 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("acceptrequest-tray only runs on Windows.");
+    eprintln!("screentime-tray only runs on Windows.");
     std::process::exit(1);
 }

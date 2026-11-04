@@ -1,7 +1,7 @@
 self:
 { config, lib, pkgs, ... }:
 let
-  cfg = config.services.acceptrequest.server;
+  cfg = config.services.screentime.server;
   port = lib.toInt (lib.last (lib.splitString ":" cfg.listen));
   acmeDir = config.security.acme.certs.${cfg.duckdns.domain}.directory;
   tls =
@@ -17,8 +17,8 @@ let
     ++ lib.optional (cfg.ntfy.tokenFile != null) "ntfy-token:${cfg.ntfy.tokenFile}";
 in
 {
-  options.services.acceptrequest.server = {
-    enable = lib.mkEnableOption "acceptrequest policy server";
+  options.services.screentime.server = {
+    enable = lib.mkEnableOption "screentime policy server";
     package = lib.mkOption {
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
@@ -73,7 +73,7 @@ in
     adminPasswordHashFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
-      description = "File with the admin password hash from `acceptrequest-server hash-password`.";
+      description = "File with the admin password hash from `screentime-server hash-password`.";
     };
     ntfy = {
       url = lib.mkOption {
@@ -104,11 +104,11 @@ in
     assertions = [
       {
         assertion = cfg.publicUrl != "";
-        message = "services.acceptrequest.server.publicUrl must be set (or set duckdns.domain).";
+        message = "services.screentime.server.publicUrl must be set (or set duckdns.domain).";
       }
       {
         assertion = cfg.duckdns.domain == null || cfg.duckdns.tokenFile != null;
-        message = "services.acceptrequest.server.duckdns.tokenFile is required with duckdns.domain.";
+        message = "services.screentime.server.duckdns.tokenFile is required with duckdns.domain.";
       }
     ];
 
@@ -119,33 +119,48 @@ in
         credentialFiles.DUCKDNS_TOKEN_FILE = cfg.duckdns.tokenFile;
         email = lib.mkIf (cfg.duckdns.email != null) cfg.duckdns.email;
         # The server reads the certificate once at startup.
-        reloadServices = [ "acceptrequest-server.service" ];
+        reloadServices = [ "screentime-server.service" ];
       };
     };
 
     environment.systemPackages = [ cfg.package ];
     networking.firewall.allowedTCPPorts = lib.mkIf cfg.openFirewall [ port ];
 
-    systemd.services.acceptrequest-server = {
-      description = "acceptrequest screen time server";
+    systemd.services.screentime-server = {
+      description = "screentime screen time server";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ] ++ lib.optional (cfg.duckdns.domain != null) "acme-${cfg.duckdns.domain}.service";
       wants = [ "network-online.target" ] ++ lib.optional (cfg.duckdns.domain != null) "acme-${cfg.duckdns.domain}.service";
       environment = {
-        ACCEPTREQUEST_LISTEN = cfg.listen;
-        ACCEPTREQUEST_DB = "sqlite:///var/lib/acceptrequest-server/acceptrequest.db";
-        ACCEPTREQUEST_PUBLIC_URL = cfg.publicUrl;
-        ACCEPTREQUEST_DEFAULT_ALLOWANCE = toString cfg.defaultAllowanceMinutes;
+        SCREENTIME_LISTEN = cfg.listen;
+        SCREENTIME_DB = "sqlite:///var/lib/screentime-server/screentime.db";
+        SCREENTIME_PUBLIC_URL = cfg.publicUrl;
+        SCREENTIME_DEFAULT_ALLOWANCE = toString cfg.defaultAllowanceMinutes;
       } // lib.optionalAttrs (cfg.ntfy.url != null) {
-        ACCEPTREQUEST_NTFY_URL = cfg.ntfy.url;
+        SCREENTIME_NTFY_URL = cfg.ntfy.url;
       } // lib.optionalAttrs (cfg.ntfy.replyUrl != null) {
-        ACCEPTREQUEST_NTFY_REPLY_URL = cfg.ntfy.replyUrl;
+        SCREENTIME_NTFY_REPLY_URL = cfg.ntfy.replyUrl;
       };
       serviceConfig = {
-        ExecStart = "${cfg.package}/bin/acceptrequest-server serve";
+        ExecStart = "${cfg.package}/bin/screentime-server serve";
         DynamicUser = true;
-        StateDirectory = "acceptrequest-server";
+        StateDirectory = "screentime-server";
         StateDirectoryMode = "0700";
+        # One-time move of the database from before the project was renamed (acceptrequest).
+        # Runs as root ("+") because the old and new directories belong to different dynamic users.
+        ExecStartPre = "+${pkgs.writeShellScript "screentime-migrate-state" ''
+          old=/var/lib/private/acceptrequest-server
+          new=/var/lib/private/screentime-server
+          if [ -f "$old/acceptrequest.db" ] && [ ! -e "$new/screentime.db" ]; then
+            for suffix in "" -wal -shm; do
+              if [ -e "$old/acceptrequest.db$suffix" ]; then
+                mv "$old/acceptrequest.db$suffix" "$new/screentime.db$suffix"
+              fi
+            done
+            chown -R --reference="$new" "$new"
+            echo "moved the database from $old"
+          fi
+        ''}";
         LoadCredential = credentials;
         Restart = "on-failure";
         AmbientCapabilities = lib.mkIf (port < 1024) [ "CAP_NET_BIND_SERVICE" ];

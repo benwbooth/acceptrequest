@@ -1,15 +1,15 @@
 self:
 { config, lib, pkgs, ... }:
 let
-  cfg = config.services.acceptrequest.client;
+  cfg = config.services.screentime.client;
   usersArg = lib.concatStringsSep "," cfg.managedUsers;
   inWheel = u:
     builtins.elem "wheel" ((config.users.users.${u} or { }).extraGroups or [ ])
     || builtins.elem u (config.users.groups.wheel.members or [ ]);
 in
 {
-  options.services.acceptrequest.client = {
-    enable = lib.mkEnableOption "acceptrequest client daemon, PAM module and greeter";
+  options.services.screentime.client = {
+    enable = lib.mkEnableOption "screentime client daemon, PAM module and greeter";
     package = lib.mkOption {
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
@@ -17,7 +17,7 @@ in
     serverUrl = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      description = "Base URL of the acceptrequest server. Without it the client runs on its cached policy.";
+      description = "Base URL of the screentime server. Without it the client runs on its cached policy.";
     };
     tokenFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
@@ -29,8 +29,8 @@ in
       default = null;
       example = "1F:E7:E4:02:...:3E:6A";
       description = ''
-        SHA-256 fingerprint of the server's certificate (printed by `acceptrequest-server gen-cert`,
-        `acceptrequest-server fingerprint`, and at server start). When set, only that certificate is
+        SHA-256 fingerprint of the server's certificate (printed by `screentime-server gen-cert`,
+        `screentime-server fingerprint`, and at server start). When set, only that certificate is
         trusted, so a self-signed server works with no CA to install.
       '';
     };
@@ -59,55 +59,61 @@ in
       default = "wheel";
       description = ''Members of this group can approve time on the spot with "My parent is here".'';
     };
-    greeter.enable = lib.mkEnableOption "the acceptrequest greetd greeter";
+    greeter.enable = lib.mkEnableOption "the screentime greetd greeter";
   };
 
   config = lib.mkIf cfg.enable {
     assertions = [
       {
         assertion = !(builtins.elem "root" cfg.managedUsers);
-        message = "acceptrequest: root cannot be a managed user.";
+        message = "screentime: root cannot be a managed user.";
       }
       {
         assertion = !(config.boot.loader.systemd-boot.enable && config.boot.loader.systemd-boot.editor);
         message = ''
-          acceptrequest: set boot.loader.systemd-boot.editor = false. With the boot menu editor on,
+          screentime: set boot.loader.systemd-boot.editor = false. With the boot menu editor on,
           anyone at the keyboard can boot with init=/bin/sh and skip every limit.
         '';
       }
     ] ++ map (u: {
       assertion = !(inWheel u);
-      message = "acceptrequest: managed user ${u} is in wheel and could disable the limits with sudo.";
+      message = "screentime: managed user ${u} is in wheel and could disable the limits with sudo.";
     }) cfg.managedUsers;
 
     warnings = lib.optional (config.boot.loader.grub.enable && config.boot.loader.grub.users == { }) ''
-      acceptrequest: GRUB has no password, so its command line can be edited at boot to skip the limits.
+      screentime: GRUB has no password, so its command line can be edited at boot to skip the limits.
     '';
 
-    systemd.services.acceptrequest-client = {
-      description = "acceptrequest screen time enforcement";
+    systemd.services.screentime-client = {
+      description = "screentime screen time enforcement";
       wantedBy = [ "multi-user.target" ];
       before = [ "display-manager.service" "systemd-user-sessions.service" ];
       after = [ "dbus.service" "systemd-logind.service" ];
       environment = {
-        ACCEPTREQUEST_USERS = usersArg;
-        ACCEPTREQUEST_GRACE_SECS = toString cfg.graceSeconds;
-        ACCEPTREQUEST_ADMIN_GROUP = cfg.adminGroup;
+        SCREENTIME_USERS = usersArg;
+        SCREENTIME_GRACE_SECS = toString cfg.graceSeconds;
+        SCREENTIME_ADMIN_GROUP = cfg.adminGroup;
       } // lib.optionalAttrs (cfg.serverUrl != null) {
-        ACCEPTREQUEST_SERVER = cfg.serverUrl;
+        SCREENTIME_SERVER = cfg.serverUrl;
       } // lib.optionalAttrs (cfg.tokenFile != null) {
-        ACCEPTREQUEST_TOKEN_FILE = toString cfg.tokenFile;
+        SCREENTIME_TOKEN_FILE = toString cfg.tokenFile;
       } // lib.optionalAttrs (cfg.caFile != null) {
-        ACCEPTREQUEST_CA_FILE = toString cfg.caFile;
+        SCREENTIME_CA_FILE = toString cfg.caFile;
       } // lib.optionalAttrs (cfg.serverFingerprint != null) {
-        ACCEPTREQUEST_SERVER_FINGERPRINT = cfg.serverFingerprint;
+        SCREENTIME_SERVER_FINGERPRINT = cfg.serverFingerprint;
       };
       serviceConfig = {
-        ExecStart = "${cfg.package}/bin/acceptrequest-client";
-        RuntimeDirectory = "acceptrequest";
+        ExecStart = "${cfg.package}/bin/screentime-client";
+        RuntimeDirectory = "screentime";
         RuntimeDirectoryPreserve = true;
-        StateDirectory = "acceptrequest";
+        StateDirectory = "screentime";
         StateDirectoryMode = "0700";
+        # One-time move of usage and settings from before the project was renamed (acceptrequest).
+        ExecStartPre = "${pkgs.writeShellScript "screentime-migrate-client-state" ''
+          if [ -f /var/lib/acceptrequest/state.json ] && [ ! -e /var/lib/screentime/state.json ]; then
+            cp -a /var/lib/acceptrequest/state.json /var/lib/screentime/state.json
+          fi
+        ''}";
         Restart = "always";
         RestartSec = 2;
         ProtectSystem = "strict";
@@ -120,15 +126,15 @@ in
     environment.systemPackages = [ cfg.package ];
 
     security.pam.services = lib.genAttrs cfg.pamServices (_: {
-      rules.account.acceptrequest = {
+      rules.account.screentime = {
         order = 10000;
         control = "required";
-        modulePath = "${cfg.package}/lib/security/pam_acceptrequest.so";
+        modulePath = "${cfg.package}/lib/security/pam_screentime.so";
         args = [ "users=${usersArg}" ];
       };
     }) // {
       # Password check for "My parent is here". The daemon answers the prompts itself, so no fingerprint.
-      acceptrequest = {
+      screentime = {
         fprintAuth = false;
         unixAuth = true;
       };
@@ -136,7 +142,7 @@ in
 
     services.greetd = lib.mkIf cfg.greeter.enable {
       enable = true;
-      settings.default_session.command = "${cfg.package}/bin/acceptrequest-greeter";
+      settings.default_session.command = "${cfg.package}/bin/screentime-greeter";
     };
   };
 }

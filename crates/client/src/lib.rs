@@ -1,5 +1,5 @@
-//! Client side of acceptrequest: the platform-independent agent plus the Linux pieces.
-//! The Windows service lives in the `acceptrequest-windows` crate and reuses the agent.
+//! Client side of screentime: the platform-independent agent plus the Linux pieces.
+//! The Windows service lives in the `screentime-windows` crate and reuses the agent.
 
 pub mod agent;
 pub mod config;

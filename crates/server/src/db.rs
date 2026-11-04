@@ -1,7 +1,7 @@
 //! Queries. Everything takes the pool so handlers stay thin.
 
 use crate::auth::{hash_token, new_token};
-use acceptrequest_common::{DowntimeWindow, Policy, UsageReport};
+use screentime_common::{DowntimeWindow, Policy, UsageReport};
 use anyhow::Result;
 use chrono::{Datelike, NaiveDate, Utc, Weekday};
 use serde::Serialize;

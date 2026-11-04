@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub struct Config {
-    /// Base URL of the acceptrequest server. Without one the daemon runs on its cached policy.
+    /// Base URL of the screentime server. Without one the daemon runs on its cached policy.
     pub server: Option<String>,
     pub token: Option<String>,
     /// Extra CA certificate (PEM) to trust for the server, e.g. for a self-signed one.
@@ -14,7 +14,7 @@ pub struct Config {
     /// Local account names to limit.
     pub users: Vec<String>,
     /// Local account name -> the name the server knows them by, when they differ
-    /// (`ACCEPTREQUEST_USERS=ryany=ryan`), so one kid has one schedule across computers.
+    /// (`SCREENTIME_USERS=ryany=ryan`), so one kid has one schedule across computers.
     pub server_names: std::collections::HashMap<String, String>,
     pub state_dir: PathBuf,
     pub socket: PathBuf,
@@ -32,12 +32,12 @@ impl Config {
     pub fn from_env() -> Result<Config> {
         let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
 
-        let (users, server_names) = parse_users(&var("ACCEPTREQUEST_USERS").unwrap_or_default());
+        let (users, server_names) = parse_users(&var("SCREENTIME_USERS").unwrap_or_default());
         if users.iter().any(|u| u == "root" || u.eq_ignore_ascii_case("administrator")) {
             bail!("an administrator account cannot be a managed user");
         }
 
-        let token = match var("ACCEPTREQUEST_TOKEN_FILE") {
+        let token = match var("SCREENTIME_TOKEN_FILE") {
             Some(path) => Some(
                 std::fs::read_to_string(&path)
                     .with_context(|| format!("reading token file {path}"))?
@@ -47,31 +47,31 @@ impl Config {
             None => None,
         };
 
-        let grace_secs = match var("ACCEPTREQUEST_GRACE_SECS") {
-            Some(s) => s.parse().context("ACCEPTREQUEST_GRACE_SECS")?,
+        let grace_secs = match var("SCREENTIME_GRACE_SECS") {
+            Some(s) => s.parse().context("SCREENTIME_GRACE_SECS")?,
             None => 120,
         };
 
         Ok(Config {
-            server: var("ACCEPTREQUEST_SERVER").map(|s| s.trim_end_matches('/').to_owned()),
+            server: var("SCREENTIME_SERVER").map(|s| s.trim_end_matches('/').to_owned()),
             token,
-            ca_file: var("ACCEPTREQUEST_CA_FILE").map(PathBuf::from),
-            server_fingerprint: match var("ACCEPTREQUEST_SERVER_FINGERPRINT") {
+            ca_file: var("SCREENTIME_CA_FILE").map(PathBuf::from),
+            server_fingerprint: match var("SCREENTIME_SERVER_FINGERPRINT") {
                 Some(f) => Some(
                     crate::pinning::parse_fingerprint(&f)
-                        .context("ACCEPTREQUEST_SERVER_FINGERPRINT must be a SHA-256 fingerprint")?,
+                        .context("SCREENTIME_SERVER_FINGERPRINT must be a SHA-256 fingerprint")?,
                 ),
                 None => None,
             },
             users,
             server_names,
-            state_dir: var("ACCEPTREQUEST_STATE_DIR").unwrap_or_else(|| DEFAULT_STATE_DIR.into()).into(),
-            socket: var("ACCEPTREQUEST_SOCKET").unwrap_or_else(|| DEFAULT_SOCKET.into()).into(),
+            state_dir: var("SCREENTIME_STATE_DIR").unwrap_or_else(|| DEFAULT_STATE_DIR.into()).into(),
+            socket: var("SCREENTIME_SOCKET").unwrap_or_else(|| DEFAULT_SOCKET.into()).into(),
             grace: Duration::from_secs(grace_secs),
             host: hostname(),
-            admin_group: var("ACCEPTREQUEST_ADMIN_GROUP").unwrap_or_else(|| DEFAULT_ADMIN_GROUP.into()),
-            pam_service: var("ACCEPTREQUEST_PAM_SERVICE").unwrap_or_else(|| "acceptrequest".into()),
-            pam_confdir: var("ACCEPTREQUEST_PAM_CONFDIR"),
+            admin_group: var("SCREENTIME_ADMIN_GROUP").unwrap_or_else(|| DEFAULT_ADMIN_GROUP.into()),
+            pam_service: var("SCREENTIME_PAM_SERVICE").unwrap_or_else(|| "screentime".into()),
+            pam_confdir: var("SCREENTIME_PAM_CONFDIR"),
         })
     }
 
@@ -112,13 +112,13 @@ fn parse_users(list: &str) -> (Vec<String>, std::collections::HashMap<String, St
 }
 
 #[cfg(unix)]
-const DEFAULT_STATE_DIR: &str = "/var/lib/acceptrequest";
+const DEFAULT_STATE_DIR: &str = "/var/lib/screentime";
 #[cfg(windows)]
-const DEFAULT_STATE_DIR: &str = r"C:\ProgramData\acceptrequest";
+const DEFAULT_STATE_DIR: &str = r"C:\ProgramData\screentime";
 #[cfg(unix)]
-const DEFAULT_SOCKET: &str = acceptrequest_common::CLIENT_SOCKET;
+const DEFAULT_SOCKET: &str = screentime_common::CLIENT_SOCKET;
 #[cfg(windows)]
-const DEFAULT_SOCKET: &str = acceptrequest_common::CLIENT_PIPE;
+const DEFAULT_SOCKET: &str = screentime_common::CLIENT_PIPE;
 #[cfg(unix)]
 const DEFAULT_ADMIN_GROUP: &str = "wheel";
 #[cfg(windows)]

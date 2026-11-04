@@ -1,4 +1,4 @@
-//! acceptrequest server: stores screen time settings in SQLite, serves the client daemons
+//! screentime server: stores screen time settings in SQLite, serves the client daemons
 //! and the admin web UI, and sends phone notifications for time requests.
 
 pub mod admin;
@@ -60,7 +60,7 @@ pub fn router(state: AppState) -> Router {
             let index = tower_http::services::ServeFile::new(dir.join("index.html"));
             app = app.fallback_service(tower_http::services::ServeDir::new(dir).fallback(index));
         }
-        None => tracing::warn!("no web UI found; set ACCEPTREQUEST_WEB_DIR to serve it"),
+        None => tracing::warn!("no web UI found; set SCREENTIME_WEB_DIR to serve it"),
     }
     let header = |name: HeaderName, value: &'static str| {
         SetResponseHeaderLayer::if_not_present(name, HeaderValue::from_static(value))

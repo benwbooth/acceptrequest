@@ -3,7 +3,7 @@
 use crate::auth::Client;
 use crate::error::{AppError, AppResult};
 use crate::{AppState, db};
-use acceptrequest_common::{Policy, TimeRequest, UsageReport};
+use screentime_common::{Policy, TimeRequest, UsageReport};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};

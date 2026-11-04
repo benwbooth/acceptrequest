@@ -1,4 +1,4 @@
-use acceptrequest_common::{CLIENT_PIPE, Decision, DenyReason, SocketRequest, SocketResponse, UserStatus};
+use screentime_common::{CLIENT_PIPE, Decision, DenyReason, SocketRequest, SocketResponse, UserStatus};
 use std::cell::RefCell;
 use std::ffi::c_void;
 use std::io::{BufRead, BufReader, Write};
@@ -392,7 +392,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
 fn tile_bitmap() -> Result<HBITMAP> {
     const SIZE: i32 = 192;
     unsafe {
-        let module = GetModuleHandleW(windows::core::w!("acceptrequest_credprov.dll"))?;
+        let module = GetModuleHandleW(windows::core::w!("screentime_credprov.dll"))?;
         let icon = LoadImageW(Some(module.into()), PCWSTR(1 as _), IMAGE_ICON, SIZE, SIZE, LR_DEFAULTCOLOR)?;
         let info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {

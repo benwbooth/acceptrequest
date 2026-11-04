@@ -6,10 +6,10 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/benwbooth/acceptrequest"
+repository = "https://github.com/benwbooth/screentime"
 
 [workspace.dependencies]
-acceptrequest-common = { path = "crates/common" }
+screentime-common = { path = "crates/common" }
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
