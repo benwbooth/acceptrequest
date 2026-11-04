@@ -25,7 +25,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 
 # A limited account must be a standard user, or it could simply stop the service.
 $admins = Get-LocalGroupMember -SID S-1-5-32-544 | ForEach-Object { ($_.Name -split '\\')[-1] }
-$entries = $Users
+# Accept a,b=c as one string too (how -File passes a list).
+$entries = @($Users | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $Users = $entries | ForEach-Object { ($_ -split '=')[0].Trim() }
 foreach ($u in $Users) {
   if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) { throw "There is no local account named '$u'." }

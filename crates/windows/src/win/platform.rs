@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::NetworkManagement::NetManagement::{
     LOCALGROUP_MEMBERS_INFO_2, NetApiBufferFree, NetLocalGroupGetMembers, NetUserGetInfo, NetUserSetInfo,
-    UF_ACCOUNTDISABLE, USER_INFO_1, USER_INFO_1020, USER_PRIV_ADMIN,
+    UF_ACCOUNTDISABLE, USER_INFO_1, USER_INFO_24, USER_INFO_1020, USER_PRIV_ADMIN,
 };
 use windows::Win32::Security::{
     EqualSid, GetTokenInformation, LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, LogonUserW,
@@ -273,32 +273,60 @@ fn set_logon_hours(user: &str, mut map: [u8; logon_hours::BYTES]) -> Result<()> 
 }
 
 /// Check `admin`'s password and that the account is an administrator.
-/// Accepts `name`, `COMPUTER\name`, `MicrosoftAccount\email` or an email.
+/// Accepts `name`, `COMPUTER\name`, `MicrosoftAccount\email` or an email. A local account
+/// linked to a Microsoft account signs in with the Microsoft account's password, which only
+/// works under its Microsoft name, so that is tried too.
 pub fn verify_admin(admin: &str, password: &str) -> Result<(), String> {
     let (domain, user) = match admin.split_once('\\') {
-        Some((d, u)) => (Some(d), u),
-        None if admin.contains('@') => (Some("MicrosoftAccount"), admin),
-        None => (Some("."), admin),
+        Some((d, u)) => (d.to_owned(), u.to_owned()),
+        None if admin.contains('@') => ("MicrosoftAccount".to_owned(), admin.to_owned()),
+        None => (".".to_owned(), admin.to_owned()),
     };
-    let (user_w, pass_w) = (wide(user), wide(password));
-    let domain_w = domain.map(wide);
+    let token = match logon(&domain, &user, password) {
+        Ok(t) => t,
+        Err(local_err) => match (domain.as_str(), microsoft_account_of(&user)) {
+            (".", Some(email)) => logon("MicrosoftAccount", &email, password).map_err(|e| format!("sign-in failed: {e}"))?,
+            _ => return Err(format!("sign-in failed: {local_err}")),
+        },
+    };
+    let admin_ok = token_is_admin(token);
+    unsafe {
+        let _ = CloseHandle(token);
+    }
+    if admin_ok? { Ok(()) } else { Err(format!("{user} is not an administrator")) }
+}
+
+fn logon(domain: &str, user: &str, password: &str) -> windows::core::Result<HANDLE> {
+    let (user_w, domain_w, pass_w) = (wide(user), wide(domain), wide(password));
     let mut token = HANDLE::default();
     unsafe {
         LogonUserW(
             pcwstr(&user_w),
-            domain_w.as_deref().map(pcwstr).unwrap_or(windows::core::PCWSTR::null()),
+            pcwstr(&domain_w),
             pcwstr(&pass_w),
             LOGON32_LOGON_NETWORK,
             LOGON32_PROVIDER_DEFAULT,
             &mut token,
         )
-    }
-    .map_err(|e| format!("sign-in failed: {e}"))?;
-    let admin = token_is_admin(token);
+    }?;
+    Ok(token)
+}
+
+/// The Microsoft account (email) a local account is linked to, if any.
+fn microsoft_account_of(user: &str) -> Option<String> {
+    let name = wide(user);
+    let mut buf: *mut u8 = std::ptr::null_mut();
     unsafe {
-        let _ = CloseHandle(token);
+        if NetUserGetInfo(None, pcwstr(&name), 24, &mut buf) != 0 || buf.is_null() {
+            return None;
+        }
+        let info = &*(buf as *const USER_INFO_24);
+        let email = (info.usri24_internet_identity.as_bool() && !info.usri24_internet_principal_name.is_null())
+            .then(|| info.usri24_internet_principal_name.to_string().ok())
+            .flatten();
+        NetApiBufferFree(Some(buf as _));
+        email.filter(|e| !e.is_empty())
     }
-    if admin? { Ok(()) } else { Err(format!("{admin} is not an administrator", admin = user)) }
 }
 
 /// Whether the token's groups include BUILTIN\Administrators. With UAC the group is marked
