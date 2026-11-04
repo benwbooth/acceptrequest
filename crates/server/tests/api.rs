@@ -104,6 +104,24 @@ async fn allowance_is_shared_across_machines() {
 }
 
 #[tokio::test]
+async fn earned_bonus_time_is_shared_across_machines_too() {
+    // A 0-minute limit plus 30 minutes earned: 20 used on pc1 leaves 10 on pc2, not 30.
+    let s = server(Config::default()).await;
+    let pc1 = db::add_client(&s.state.db, "pc1").await.unwrap();
+    let pc2 = db::add_client(&s.state.db, "pc2").await.unwrap();
+    let today = Local::now().date_naive();
+    let uid = db::ensure_user(&s.state.db, "kid", 0).await.unwrap();
+    db::add_bonus(&s.state.db, uid, today, 30, "web").await.unwrap();
+    let report = UsageReport { username: "kid".into(), host: "x".into(), day: today, active_minutes: 20, local_bonus_minutes: 0 };
+    s.call("POST", "/api/client/usage", Some(&pc1), Some(serde_json::to_value(&report).unwrap())).await;
+
+    let p2 = s.policy(&pc2, "kid").await;
+    assert_eq!(p2.daily_allowance_minutes.unwrap() + p2.bonus_minutes, 10);
+    let p1 = s.policy(&pc1, "kid").await;
+    assert_eq!(p1.daily_allowance_minutes.unwrap() + p1.bonus_minutes, 30);
+}
+
+#[tokio::test]
 async fn notification_link_grants_once() {
     let s = server(Config::default()).await;
     let pc1 = db::add_client(&s.state.db, "pc1").await.unwrap();

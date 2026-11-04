@@ -181,8 +181,8 @@ pub async fn record_usage(db: &SqlitePool, user: i64, host: &str, report: &Usage
     Ok(())
 }
 
-/// The policy a client on `host` should enforce today. The day's allowance is shared across
-/// machines, so time used on other machines is taken off it.
+/// The policy a client on `host` should enforce today. A kid's time is shared across machines,
+/// so time used on other machines is taken off the day's allowance first, then off its bonus.
 pub async fn policy_for(db: &SqlitePool, user: i64, username: &str, host: &str, today: NaiveDate) -> Result<Policy> {
     let allowance = allowances(db, user).await?[today.weekday().num_days_from_monday() as usize];
     let used_elsewhere: u32 = usage(db, user, today)
@@ -191,11 +191,16 @@ pub async fn policy_for(db: &SqlitePool, user: i64, username: &str, host: &str, 
         .filter(|u| u.host != host)
         .map(|u| u.active_minutes)
         .sum();
+    let bonus = bonus(db, user, today).await?;
+    let (allowance, bonus) = match allowance {
+        Some(a) => (Some(a.saturating_sub(used_elsewhere)), bonus.saturating_sub(used_elsewhere.saturating_sub(a))),
+        None => (None, bonus),
+    };
     Ok(Policy {
         username: username.to_owned(),
         day: today,
-        daily_allowance_minutes: allowance.map(|a| a.saturating_sub(used_elsewhere)),
-        bonus_minutes: bonus(db, user, today).await?,
+        daily_allowance_minutes: allowance,
+        bonus_minutes: bonus,
         downtime: downtime(db, user).await?,
     })
 }
