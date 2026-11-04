@@ -11,7 +11,11 @@ pub struct Config {
     /// SHA-256 of the server's certificate. When set, only that certificate is accepted,
     /// which lets a self-signed server work without installing a CA.
     pub server_fingerprint: Option<[u8; 32]>,
+    /// Local account names to limit.
     pub users: Vec<String>,
+    /// Local account name -> the name the server knows them by, when they differ
+    /// (`ACCEPTREQUEST_USERS=ryany=ryan`), so one kid has one schedule across computers.
+    pub server_names: std::collections::HashMap<String, String>,
     pub state_dir: PathBuf,
     pub socket: PathBuf,
     /// How long a session stays locked after time runs out before it is terminated.
@@ -28,12 +32,7 @@ impl Config {
     pub fn from_env() -> Result<Config> {
         let var = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
 
-        let users: Vec<String> = var("ACCEPTREQUEST_USERS")
-            .unwrap_or_default()
-            .split(',')
-            .map(|u| u.trim().to_owned())
-            .filter(|u| !u.is_empty())
-            .collect();
+        let (users, server_names) = parse_users(&var("ACCEPTREQUEST_USERS").unwrap_or_default());
         if users.iter().any(|u| u == "root" || u.eq_ignore_ascii_case("administrator")) {
             bail!("an administrator account cannot be a managed user");
         }
@@ -65,6 +64,7 @@ impl Config {
                 None => None,
             },
             users,
+            server_names,
             state_dir: var("ACCEPTREQUEST_STATE_DIR").unwrap_or_else(|| DEFAULT_STATE_DIR.into()).into(),
             socket: var("ACCEPTREQUEST_SOCKET").unwrap_or_else(|| DEFAULT_SOCKET.into()).into(),
             grace: Duration::from_secs(grace_secs),
@@ -80,6 +80,11 @@ impl Config {
         self.users.iter().any(|u| if cfg!(windows) { u.eq_ignore_ascii_case(user) } else { u == user })
     }
 
+    /// The name the server knows a (configured) local account by.
+    pub fn server_name<'a>(&'a self, local: &'a str) -> &'a str {
+        self.server_names.get(local).map(String::as_str).unwrap_or(local)
+    }
+
     /// The configured spelling of `user`, so state is keyed the same however Windows reports it.
     pub fn managed_name(&self, user: &str) -> Option<&str> {
         self.users
@@ -87,6 +92,23 @@ impl Config {
             .find(|u| if cfg!(windows) { u.eq_ignore_ascii_case(user) } else { *u == user })
             .map(String::as_str)
     }
+}
+
+/// `a,b=c` -> local accounts `[a, b]`, with `b` known to the server as `c`.
+fn parse_users(list: &str) -> (Vec<String>, std::collections::HashMap<String, String>) {
+    let mut users = Vec::new();
+    let mut server_names = std::collections::HashMap::new();
+    for entry in list.split(',').map(str::trim) {
+        match entry.split_once('=') {
+            Some((local, server)) if !local.trim().is_empty() && !server.trim().is_empty() => {
+                users.push(local.trim().to_owned());
+                server_names.insert(local.trim().to_owned(), server.trim().to_owned());
+            }
+            None if !entry.is_empty() => users.push(entry.to_owned()),
+            _ => {}
+        }
+    }
+    (users, server_names)
 }
 
 #[cfg(unix)]
@@ -108,4 +130,15 @@ fn hostname() -> String {
     #[cfg(windows)]
     let name = std::env::var("COMPUTERNAME").ok();
     name.map(|h| h.trim().to_owned()).filter(|h| !h.is_empty()).unwrap_or_else(|| "unknown".into())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn users_with_server_names() {
+        let (users, names) = super::parse_users(" sam , ryany = ryan ,, =x");
+        assert_eq!(users, ["sam", "ryany"]);
+        assert_eq!(names.get("ryany").map(String::as_str), Some("ryan"));
+        assert!(!names.contains_key("sam"));
+    }
 }

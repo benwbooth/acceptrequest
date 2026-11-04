@@ -11,6 +11,7 @@ Run it again to upgrade or change settings; your usage and settings are kept.
 param(
   [Parameter(Mandatory)] [string] $Server,
   [Parameter(Mandatory)] [string] $Token,
+  # Local account names; use local=server (e.g. ryany=ryan) when the server knows them by another name.
   [Parameter(Mandatory)] [string[]] $Users,
   [string] $Fingerprint,
   [int] $GraceSeconds = 120
@@ -24,6 +25,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 
 # A limited account must be a standard user, or it could simply stop the service.
 $admins = Get-LocalGroupMember -SID S-1-5-32-544 | ForEach-Object { ($_.Name -split '\\')[-1] }
+$entries = $Users
+$Users = $entries | ForEach-Object { ($_ -split '=')[0].Trim() }
 foreach ($u in $Users) {
   if (-not (Get-LocalUser -Name $u -ErrorAction SilentlyContinue)) { throw "There is no local account named '$u'." }
   if ($admins -contains $u) {
@@ -53,7 +56,7 @@ Set-Content -NoNewline -Path (Join-Path $data 'token') -Value $Token
 $config = @(
   "ACCEPTREQUEST_SERVER=$Server",
   "ACCEPTREQUEST_TOKEN_FILE=$(Join-Path $data 'token')",
-  "ACCEPTREQUEST_USERS=$($Users -join ',')",
+  "ACCEPTREQUEST_USERS=$($entries -join ',')",
   "ACCEPTREQUEST_GRACE_SECS=$GraceSeconds"
 )
 if ($Fingerprint) { $config += "ACCEPTREQUEST_SERVER_FINGERPRINT=$Fingerprint" }

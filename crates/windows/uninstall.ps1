@@ -7,7 +7,7 @@ $users = @()
 $config = Join-Path $data 'config.env'
 if (Test-Path $config) {
   $line = Get-Content $config | Where-Object { $_ -like 'ACCEPTREQUEST_USERS=*' }
-  if ($line) { $users = ($line -split '=', 2)[1] -split ',' | Where-Object { $_ } }
+  if ($line) { $users = ($line -split '=', 2)[1] -split ',' | Where-Object { $_ } | ForEach-Object { ($_ -split '=')[0] } }
 }
 if (Get-Service $name -ErrorAction SilentlyContinue) {
   Stop-Service $name -Force -ErrorAction SilentlyContinue

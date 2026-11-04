@@ -267,8 +267,9 @@ impl<P: Platform> Agent<P> {
         loop {
             ticker.tick().await;
             for user in &self.config.users {
-                match api.policy(user).await {
-                    Ok((p, server_time)) if &p.username == user => {
+                let server_user = self.config.server_name(user);
+                match api.policy(server_user).await {
+                    Ok((p, server_time)) if p.username == server_user => {
                         if let Some(t) = server_time {
                             self.note_server_time(t);
                         }
@@ -281,7 +282,7 @@ impl<P: Platform> Agent<P> {
                 let report = {
                     let state = self.state.lock().await;
                     UsageReport {
-                        username: user.clone(),
+                        username: server_user.to_owned(),
                         host: self.config.host.clone(),
                         day: today,
                         active_minutes: state.used_minutes(user, today),
@@ -374,7 +375,7 @@ impl<P: Platform> Agent<P> {
                     t.last_request = Some(Instant::now());
                 }
                 let request = TimeRequest {
-                    username,
+                    username: self.config.server_name(&username).to_owned(),
                     host: self.config.host.clone(),
                     requested_minutes: minutes.map(|m| m.min(24 * 60)),
                     reason: reason.map(|r| r.chars().take(500).collect()),
@@ -490,6 +491,7 @@ mod tests {
             ca_file: None,
             server_fingerprint: None,
             users: vec!["kid".into()],
+            server_names: Default::default(),
             state_dir: dir.into(),
             socket: dir.join("s"),
             grace,
