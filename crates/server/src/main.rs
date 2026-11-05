@@ -86,6 +86,29 @@ async fn serve() -> Result<()> {
             let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
                 .await
                 .with_context(|| format!("loading TLS cert {} and key {}", cert.display(), key.display()))?;
+            // Certificates are renewed in place (Let's Encrypt every couple of months); pick up
+            // the new one without a restart.
+            {
+                let (tls, cert, key) = (tls.clone(), cert.clone(), key.clone());
+                tokio::spawn(async move {
+                    let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+                    let mut seen = modified(&cert);
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                        let now = modified(&cert);
+                        if now == seen {
+                            continue;
+                        }
+                        match tls.reload_from_pem_file(&cert, &key).await {
+                            Ok(()) => {
+                                tracing::info!("reloaded the renewed TLS certificate");
+                                seen = now;
+                            }
+                            Err(e) => tracing::warn!("reloading the TLS certificate failed: {e:#}"),
+                        }
+                    }
+                });
+            }
             match screentime_server::certs::pem_fingerprint(&cert) {
                 Ok(f) => tracing::info!("certificate fingerprint (for clients' serverFingerprint): {f}"),
                 Err(e) => tracing::warn!("couldn't fingerprint the certificate: {e:#}"),

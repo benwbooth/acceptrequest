@@ -88,6 +88,26 @@
             '';
             doCheck = false;
           };
+
+          # The server as a container image, for running under Docker:
+          #   nix build .#docker && docker load < result
+          # Data lives in /data; TLS comes from SCREENTIME_TLS_CERT/KEY (reloaded when renewed).
+          docker = pkgs.dockerTools.buildLayeredImage {
+            name = "screentime";
+            tag = "latest";
+            contents = [ pkgs.cacert ];
+            extraCommands = "mkdir -p data tmp && chmod 1777 tmp";
+            config = {
+              Cmd = [ "${default}/bin/screentime-server" "serve" ];
+              Env = [
+                "SCREENTIME_LISTEN=0.0.0.0:8443"
+                "SCREENTIME_DB=sqlite:///data/screentime.db"
+                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+              ];
+              ExposedPorts."8443/tcp" = { };
+              Volumes."/data" = { };
+            };
+          };
         }
       );
 
