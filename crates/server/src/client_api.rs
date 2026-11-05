@@ -43,7 +43,30 @@ async fn usage(State(s): State<AppState>, client: Client, Json(report): Json<Usa
         return Err(AppError::BadRequest("more minutes than a day has".into()));
     }
     let user = db::ensure_user(&s.db, &report.username, s.config.default_allowance_minutes).await?;
+    let before: u32 = db::usage(&s.db, user, report.day)
+        .await?
+        .iter()
+        .find(|u| u.host == client.hostname)
+        .map_or(0, |u| u.local_bonus_minutes);
     db::record_usage(&s.db, user, &client.hostname, &report).await?;
+    // Time approved at the computer itself: tell the parents, in case it wasn't one of them.
+    if report.local_bonus_minutes > before {
+        let added = report.local_bonus_minutes - before;
+        let name = db::display_name(&s.db, user).await?.unwrap_or_else(|| report.username.clone());
+        tracing::info!(user = %report.username, host = %client.hostname, added, "time approved at the computer");
+        let payload = crate::push::Payload {
+            title: format!("{name} got {added} more minutes on {}", client.hostname),
+            body: "Approved at the computer with \u{201c}My parent is here\u{201d}. Not you? Change the parent PIN.".into(),
+            url: format!("{}/", s.config.public_url),
+            actions: Vec::new(),
+        };
+        let (notifier, db) = (s.notifier.clone(), s.db.clone());
+        tokio::spawn(async move {
+            if let Err(e) = notifier.send_push(&db, &payload).await {
+                tracing::warn!("push about a computer grant failed: {e:#}");
+            }
+        });
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

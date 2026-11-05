@@ -598,20 +598,29 @@ impl<P: Platform> Agent<P> {
             let state = self.state.lock().await;
             state.parent_pin_hash.iter().chain(&state.admin_password_hash).cloned().collect()
         };
-        let verified = !self.is_managed(&admin)
-            && tokio::task::block_in_place(|| {
-                hashes.iter().any(|h| pin_matches(h, &password))
-                    || self
-                        .platform
+        let names = ["the parent PIN", "the Screen time web password"];
+        let pin_set = self.state.lock().await.parent_pin_hash.is_some();
+        let method = if self.is_managed(&admin) {
+            None
+        } else {
+            tokio::task::block_in_place(|| {
+                // Which secret worked is logged, so a leaked one can be found and changed.
+                if let Some(i) = hashes.iter().position(|h| pin_matches(h, &password)) {
+                    Some(names[if pin_set { i } else { 1 }])
+                } else {
+                    self.platform
                         .verify_admin(&admin, &password)
                         .inspect_err(|e| tracing::warn!("parent check failed: {e}"))
                         .is_ok()
-            });
-        if !verified {
+                        .then_some("the parent's Windows password")
+                }
+            })
+        };
+        let Some(method) = method else {
             tracing::warn!(%admin, user = %username, "refused \"my parent is here\" grant");
             tokio::time::sleep(PARENT_FAILURE_DELAY).await;
             return error("That name and password can't approve time.");
-        }
+        };
 
         self.parent_failures.lock().await.clear();
         let mut state = self.state.lock().await;
@@ -620,7 +629,7 @@ impl<P: Platform> Agent<P> {
         if let Err(e) = state.save(&self.config.state_dir) {
             tracing::error!("saving state failed: {e:#}");
         }
-        tracing::info!(%admin, user = %username, minutes, "parent granted time locally");
+        tracing::info!(%admin, user = %username, minutes, with = method, "parent granted time locally");
         SocketResponse::Granted { minutes }
     }
 }
