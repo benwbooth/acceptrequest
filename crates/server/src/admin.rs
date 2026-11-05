@@ -24,6 +24,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/password", post(change_password))
+        .route("/api/parent-pin", get(parent_pin).put(set_parent_pin))
         .route("/api/overview", get(overview))
         .route("/api/users", post(add_user))
         .route("/api/users/{username}", get(user))
@@ -430,5 +431,38 @@ async fn set_name(
         return Err(AppError::BadRequest("at most 60 characters".into()));
     }
     db::set_display_name(&s.db, id, (!name.is_empty()).then_some(name)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Serialize)]
+struct PinState {
+    set: bool,
+}
+
+async fn parent_pin(State(s): State<AppState>, _: Admin) -> AppResult<Json<PinState>> {
+    Ok(Json(PinState { set: db::parent_pin_hash(&s.db).await?.is_some() }))
+}
+
+#[derive(Deserialize)]
+struct PinBody {
+    /// The new PIN, or None to remove it.
+    pin: Option<String>,
+}
+
+/// The PIN a parent types at a computer for "My parent is here", instead of their Windows
+/// password (Windows doesn't let programs check a Windows Hello PIN).
+async fn set_parent_pin(State(s): State<AppState>, _: Admin, Json(body): Json<PinBody>) -> AppResult<StatusCode> {
+    let hash = match body.pin {
+        Some(pin) => {
+            let len = pin.chars().count();
+            if !(4..=32).contains(&len) {
+                return Err(AppError::BadRequest("Use 4 to 32 characters.".into()));
+            }
+            Some(tokio::task::spawn_blocking(move || crate::auth::hash_password(&pin)).await??)
+        }
+        None => None,
+    };
+    db::set_parent_pin_hash(&s.db, hash.as_deref()).await?;
+    tracing::info!(set = hash.is_some(), "parent PIN changed");
     Ok(StatusCode::NO_CONTENT)
 }

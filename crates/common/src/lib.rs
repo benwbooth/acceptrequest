@@ -221,6 +221,9 @@ pub struct AccountMapping {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountsReply {
     pub limited: Vec<AccountMapping>,
+    /// Argon2 hash of the parent PIN set in the web UI, accepted by "My parent is here".
+    #[serde(default)]
+    pub parent_pin_hash: Option<String>,
 }
 
 /// Usage report a client sends to the server.

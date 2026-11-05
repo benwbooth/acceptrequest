@@ -9,6 +9,7 @@ license.workspace = true
 screentime-common.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
+argon2 = { version = "0.5", features = ["std"] }
 libc = "0.2"
 rpassword = "7"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

@@ -35,6 +35,9 @@ pub struct State {
     /// Which local accounts are limited as which kid, as last received from the server.
     #[serde(default)]
     pub account_map: Option<Vec<screentime_common::AccountMapping>>,
+    /// Hash of the parent PIN set in the web UI; "My parent is here" accepts it.
+    #[serde(default)]
+    pub parent_pin_hash: Option<String>,
     /// The administrator who last approved time here, offered first next time.
     #[serde(default)]
     pub last_admin: Option<String>,

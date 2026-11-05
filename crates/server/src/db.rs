@@ -511,6 +511,29 @@ pub async fn set_admin_password_hash(db: &SqlitePool, hash: &str) -> Result<()> 
     Ok(())
 }
 
+const PARENT_PIN_SETTING: &str = "parent_pin_hash";
+
+pub async fn parent_pin_hash(db: &SqlitePool) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar("SELECT value FROM settings WHERE key = ?").bind(PARENT_PIN_SETTING).fetch_optional(db).await?)
+}
+
+/// Set the parent PIN's hash, or remove the PIN with None.
+pub async fn set_parent_pin_hash(db: &SqlitePool, hash: Option<&str>) -> Result<()> {
+    match hash {
+        Some(h) => {
+            sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+                .bind(PARENT_PIN_SETTING)
+                .bind(h)
+                .execute(db)
+                .await?;
+        }
+        None => {
+            sqlx::query("DELETE FROM settings WHERE key = ?").bind(PARENT_PIN_SETTING).execute(db).await?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn delete_all_sessions(db: &SqlitePool) -> Result<()> {
     sqlx::query("DELETE FROM sessions").execute(db).await?;
     Ok(())

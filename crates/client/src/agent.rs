@@ -236,7 +236,9 @@ impl<P: Platform> Agent<P> {
         for m in reply.limited.iter().filter(|m| old.server_names.get(&m.account) != Some(&m.kid)) {
             tracing::info!(user = %m.account, kid = %m.kid, "limited as");
         }
-        self.state.lock().await.account_map = Some(new.mappings());
+        let mut state = self.state.lock().await;
+        state.account_map = Some(new.mappings());
+        state.parent_pin_hash = reply.parent_pin_hash;
     }
 
     /// Check sessions now instead of at the next regular tick.
@@ -584,11 +586,18 @@ impl<P: Platform> Agent<P> {
             failures.push(Instant::now());
         }
 
-        // A managed account fails exactly like a wrong password.
+        // The parent PIN from the web UI, or an administrator's own password. A limited account
+        // fails exactly like a wrong password.
+        let pin_hash = self.state.lock().await.parent_pin_hash.clone();
         let verified = !self.is_managed(&admin)
-            && tokio::task::block_in_place(|| self.platform.verify_admin(&admin, &password))
-                .inspect_err(|e| tracing::warn!("parent check failed: {e}"))
-                .is_ok();
+            && tokio::task::block_in_place(|| {
+                pin_hash.as_deref().is_some_and(|h| pin_matches(h, &password))
+                    || self
+                        .platform
+                        .verify_admin(&admin, &password)
+                        .inspect_err(|e| tracing::warn!("parent check failed: {e}"))
+                        .is_ok()
+            });
         if !verified {
             tracing::warn!(%admin, user = %username, "refused \"my parent is here\" grant");
             tokio::time::sleep(PARENT_FAILURE_DELAY).await;
@@ -605,6 +614,11 @@ impl<P: Platform> Agent<P> {
         tracing::info!(%admin, user = %username, minutes, "parent granted time locally");
         SocketResponse::Granted { minutes }
     }
+}
+
+fn pin_matches(hash: &str, pin: &str) -> bool {
+    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+    PasswordHash::new(hash).is_ok_and(|h| argon2::Argon2::default().verify_password(pin.as_bytes(), &h).is_ok())
 }
 
 async fn write_line<W: AsyncWrite + Unpin>(writer: &mut W, response: &SocketResponse) -> Result<()> {
@@ -676,6 +690,24 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(60)).await;
         a.enforce("kid", &session(), OUT).await;
         assert_eq!(*a.platform.log.lock().unwrap(), ["lock 1", "lock 1", "end kid"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn parent_pin_approves_time() {
+        use argon2::password_hash::{PasswordHasher, SaltString};
+        let dir = tempfile::tempdir().unwrap();
+        let a = agent(dir.path(), Duration::from_secs(120));
+        let salt = SaltString::encode_b64(b"0123456789abcdef").unwrap();
+        let hash = argon2::Argon2::default().hash_password(b"4321", &salt).unwrap().to_string();
+        a.state.lock().await.parent_pin_hash = Some(hash);
+        let grant = |pw: &str| SocketRequest::ParentGrant {
+            username: "kid".into(),
+            minutes: 15,
+            admin: "dad".into(),
+            password: pw.into(),
+        };
+        assert_eq!(a.answer(grant("4321")).await, SocketResponse::Granted { minutes: 15 });
+        assert!(matches!(a.answer(grant("1234")).await, SocketResponse::Error { .. }));
     }
 
     #[tokio::test]

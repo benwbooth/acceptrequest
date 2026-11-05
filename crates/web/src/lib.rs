@@ -899,6 +899,88 @@ fn NotificationsView() -> impl IntoView {
     }
 }
 
+/// The PIN a parent types at a computer for "My parent is here".
+#[component]
+fn ParentPin() -> impl IntoView {
+    let ctx = ctx();
+    let is_set = RwSignal::new(None::<bool>);
+    let pin = RwSignal::new(String::new());
+    let confirm = RwSignal::new(String::new());
+    let error = RwSignal::new(None::<String>);
+    let load = move || {
+        spawn_local(async move {
+            if let Ok(set) = api::parent_pin_set().await {
+                is_set.set(Some(set));
+            }
+        })
+    };
+    load();
+    let save = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        let (p, c) = (pin.get_untracked(), confirm.get_untracked());
+        if p != c {
+            error.set(Some("The PINs don't match.".into()));
+            return;
+        }
+        if !(4..=32).contains(&p.chars().count()) {
+            error.set(Some("Use 4 to 32 characters.".into()));
+            return;
+        }
+        error.set(None);
+        spawn_local(async move {
+            match api::set_parent_pin(Some(&p)).await {
+                Ok(()) => {
+                    pin.set(String::new());
+                    confirm.set(String::new());
+                    ctx.say("Parent PIN saved. The computers pick it up within a minute.", true);
+                    load();
+                }
+                Err(e) => error.set(Some(e.to_string())),
+            }
+        });
+    };
+    let remove = move |_: leptos::ev::MouseEvent| {
+        if confirm_action("Remove the parent PIN? Approving at a computer will need a parent's Windows password.") {
+            spawn_local(async move {
+                match api::set_parent_pin(None).await {
+                    Ok(()) => {
+                        ctx.say("Parent PIN removed", true);
+                        load();
+                    }
+                    Err(e) => ctx.say(e.to_string(), false),
+                }
+            });
+        }
+    };
+    let field = |id: &'static str, label: &'static str, value: RwSignal<String>| {
+        view! {
+            <label for=id>{label}</label>
+            <input id=id type="password" inputmode="numeric" autocomplete="new-password" required
+                prop:value=move || value.get() on:input=move |ev| value.set(event_target_value(&ev))/>
+        }
+    };
+    view! {
+        <form class="card form" on:submit=save>
+            <h3>"Parent PIN"</h3>
+            <p class="muted small">
+                "Type this at a computer for \u{201c}My parent is here\u{201d} instead of your full password. "
+                {move || match is_set.get() {
+                    Some(true) => "A PIN is set.",
+                    Some(false) => "No PIN is set yet.",
+                    None => "",
+                }}
+            </p>
+            {field("pin-new", "New PIN", pin)}
+            {field("pin-confirm", "New PIN again", confirm)}
+            {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
+            <div class="row">
+                <button class="primary">{move || if is_set.get() == Some(true) { "Change PIN" } else { "Set PIN" }}</button>
+                {move || (is_set.get() == Some(true)).then(|| view! { <button type="button" class="ghost danger" on:click=remove>"Remove PIN"</button> })}
+            </div>
+        </form>
+    }
+}
+
 #[component]
 fn AccountView() -> impl IntoView {
     let ctx = ctx();
@@ -965,6 +1047,7 @@ fn AccountView() -> impl IntoView {
                 </button>
             </div>
         </form>
+        <ParentPin/>
         <div class="card">
             <h3>"Sign out"</h3>
             <p class="muted small">"Signs out this device only."</p>

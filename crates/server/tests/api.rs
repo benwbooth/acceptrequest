@@ -519,3 +519,24 @@ async fn parents_can_lock_and_take_time_away() {
     s.call("PUT", "/api/users/ryan/lock", me, Some(lock(None, false))).await;
     assert!(!s.policy(&pc1, "ryan").await.locked && !s.policy(&pc2, "ryan").await.locked);
 }
+
+#[tokio::test]
+async fn parent_pin_reaches_the_computers() {
+    let s = server(with_password()).await;
+    let pc1 = db::add_client(&s.state.db, "Ryan-PC").await.unwrap();
+    let cookie = s.admin_cookie().await;
+    let me = Some(cookie.as_str());
+    let report = json!({"accounts": [{"name": "ryany", "admin": false}]});
+    let reply = |body: String| serde_json::from_str::<Value>(&body).unwrap()["parent_pin_hash"].clone();
+
+    assert_eq!(reply(s.call("POST", "/api/client/accounts", Some(&pc1), Some(report.clone())).await.2), Value::Null);
+    assert_eq!(s.call("PUT", "/api/parent-pin", me, Some(json!({"pin": "123"}))).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(s.call("PUT", "/api/parent-pin", me, Some(json!({"pin": "4321"}))).await.0, StatusCode::NO_CONTENT);
+    assert_eq!(s.call("GET", "/api/parent-pin", me, None).await.2, r#"{"set":true}"#);
+    let hash = reply(s.call("POST", "/api/client/accounts", Some(&pc1), Some(report.clone())).await.2);
+    assert!(auth::verify_password(hash.as_str().unwrap(), "4321"));
+    assert!(!auth::verify_password(hash.as_str().unwrap(), "1234"));
+    assert_eq!(s.call("PUT", "/api/parent-pin", None, Some(json!({"pin": "9999"}))).await.0, StatusCode::UNAUTHORIZED);
+    s.call("PUT", "/api/parent-pin", me, Some(json!({"pin": null}))).await;
+    assert_eq!(reply(s.call("POST", "/api/client/accounts", Some(&pc1), Some(report)).await.2), Value::Null);
+}

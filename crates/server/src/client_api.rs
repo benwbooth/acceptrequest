@@ -81,7 +81,7 @@ async fn accounts(
         }
     }
     let limited = db::report_accounts(&s.db, client.id, &report.accounts, s.config.default_allowance_minutes).await?;
-    Ok(Json(AccountsReply { limited }))
+    Ok(Json(AccountsReply { limited, parent_pin_hash: db::parent_pin_hash(&s.db).await? }))
 }
 
 #[cfg(test)]
