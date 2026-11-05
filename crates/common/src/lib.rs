@@ -165,6 +165,10 @@ pub fn apply_override(decision: Decision, now: NaiveDateTime, override_until: Op
     let Some(until) = override_until.filter(|u| *u > now) else {
         return decision;
     };
+    // A parent's lock from the web UI beats time approved earlier at the computer.
+    if decision == (Decision::Denied { reason: DenyReason::Locked }) {
+        return decision;
+    }
     let by_override = (until - now).num_minutes().max(1) as u32;
     match decision {
         Decision::Denied { .. } => Decision::Allowed { remaining_minutes: Some(by_override) },
@@ -224,9 +228,6 @@ pub struct AccountsReply {
     /// Argon2 hash of the parent PIN set in the web UI, accepted by "My parent is here".
     #[serde(default)]
     pub parent_pin_hash: Option<String>,
-    /// Argon2 hash of the web UI's own sign-in password, also accepted by "My parent is here".
-    #[serde(default)]
-    pub admin_password_hash: Option<String>,
 }
 
 /// Usage report a client sends to the server.
@@ -413,15 +414,14 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_beats_everything_but_a_parent_at_the_computer() {
+    fn a_lock_beats_everything_even_time_approved_at_the_computer() {
         let mut p = policy();
         p.locked = true;
         let now = at("2026-11-02", "12:00");
         assert_eq!(evaluate(Some(&p), now, 0), Decision::Denied { reason: DenyReason::Locked });
-        assert!(matches!(
-            apply_override(evaluate(Some(&p), now, 0), now, Some(at("2026-11-02", "12:30"))),
-            Decision::Allowed { .. }
-        ));
+        // The parent unlocks from the web UI; a grant at the computer doesn't get around it.
+        let later = Some(at("2026-11-02", "12:30"));
+        assert_eq!(apply_override(evaluate(Some(&p), now, 0), now, later), Decision::Denied { reason: DenyReason::Locked });
         // Older servers don't send the field: not locked.
         let old: Policy = serde_json::from_str(
             r#"{"username":"kid","day":"2026-11-02","daily_allowance_minutes":60,"bonus_minutes":0,"downtime":[]}"#,
