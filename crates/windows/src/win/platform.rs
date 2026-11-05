@@ -19,7 +19,8 @@ use windows::Win32::NetworkManagement::NetManagement::{
     UF_ACCOUNTDISABLE, USER_INFO_1, USER_INFO_24, USER_INFO_1020, USER_PRIV_ADMIN,
 };
 use windows::Win32::Security::{
-    EqualSid, GetTokenInformation, LOGON32_LOGON_NETWORK, LOGON32_PROVIDER_DEFAULT, LogonUserW,
+    EqualSid, GetTokenInformation, LOGON32_LOGON, LOGON32_LOGON_INTERACTIVE, LOGON32_LOGON_NETWORK,
+    LOGON32_PROVIDER_DEFAULT, LogonUserW,
     LookupAccountSidW, PSID, SID_NAME_USE, SidTypeUser,
     SECURITY_MAX_SID_SIZE, TOKEN_GROUPS, TokenGroups, WinBuiltinAdministratorsSid, CreateWellKnownSid,
 };
@@ -309,33 +310,50 @@ fn set_logon_hours(user: &str, mut map: [u8; logon_hours::BYTES]) -> Result<()> 
 /// works under its Microsoft name, so that is tried too.
 pub fn verify_admin(admin: &str, password: &str) -> Result<(), String> {
     let (domain, user) = match admin.split_once('\\') {
-        Some((d, u)) => (d.to_owned(), u.to_owned()),
-        None if admin.contains('@') => ("MicrosoftAccount".to_owned(), admin.to_owned()),
-        None => (".".to_owned(), admin.to_owned()),
+        Some((d, u)) => (Some(d.to_owned()), u.to_owned()),
+        None if admin.contains('@') => (Some("MicrosoftAccount".to_owned()), admin.to_owned()),
+        None => (Some(".".to_owned()), admin.to_owned()),
     };
-    let token = match logon(&domain, &user, password) {
-        Ok(t) => t,
-        Err(local_err) => match (domain.as_str(), microsoft_account_of(&user)) {
-            (".", Some(email)) => logon("MicrosoftAccount", &email, password).map_err(|e| format!("sign-in failed: {e}"))?,
-            _ => return Err(format!("sign-in failed: {local_err}")),
-        },
-    };
-    let admin_ok = token_is_admin(token);
-    unsafe {
-        let _ = CloseHandle(token);
+    // Every form Windows may accept this password under: as given, and for a local account
+    // linked to a Microsoft account, as MicrosoftAccount\email and as a bare email (UPN).
+    let mut names = vec![(domain.clone(), user.clone())];
+    if domain.as_deref() == Some(".")
+        && let Some(email) = microsoft_account_of(&user)
+    {
+        names.push((Some("MicrosoftAccount".to_owned()), email.clone()));
+        names.push((None, email));
     }
-    if admin_ok? { Ok(()) } else { Err(format!("{user} is not an administrator")) }
+    let mut last_err = String::new();
+    for (domain, user) in &names {
+        for kind in [LOGON32_LOGON_NETWORK, LOGON32_LOGON_INTERACTIVE] {
+            match logon(domain.as_deref(), user, password, kind) {
+                Ok(token) => {
+                    let admin_ok = token_is_admin(token);
+                    unsafe {
+                        let _ = CloseHandle(token);
+                    }
+                    return if admin_ok? { Ok(()) } else { Err(format!("{user} is not an administrator")) };
+                }
+                Err(e) => {
+                    tracing::debug!(?domain, user, kind = kind.0, "parent sign-in attempt failed: {e}");
+                    last_err = e.to_string();
+                }
+            }
+        }
+    }
+    Err(format!("sign-in failed: {last_err}"))
 }
 
-fn logon(domain: &str, user: &str, password: &str) -> windows::core::Result<HANDLE> {
-    let (user_w, domain_w, pass_w) = (wide(user), wide(domain), wide(password));
+fn logon(domain: Option<&str>, user: &str, password: &str, kind: LOGON32_LOGON) -> windows::core::Result<HANDLE> {
+    let (user_w, pass_w) = (wide(user), wide(password));
+    let domain_w = domain.map(wide);
     let mut token = HANDLE::default();
     unsafe {
         LogonUserW(
             pcwstr(&user_w),
-            pcwstr(&domain_w),
+            domain_w.as_deref().map(pcwstr).unwrap_or(PCWSTR::null()),
             pcwstr(&pass_w),
-            LOGON32_LOGON_NETWORK,
+            kind,
             LOGON32_PROVIDER_DEFAULT,
             &mut token,
         )

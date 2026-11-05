@@ -23,6 +23,9 @@ use windows_core::IUnknownImpl;
 pub const CLSID: GUID = GUID::from_u128(0x6f6b7a8e_2d1c_4b8a_9a53_7c0e2f4a91d3);
 
 const PIPE_TIMEOUT: Duration = Duration::from_secs(4);
+/// The kid last picked on the tile, so it's preselected next time (LogonUI runs as SYSTEM,
+/// which may write here; kids can't read or write this folder).
+const LAST_WHO_FILE: &str = r"C:\ProgramData\screentime\tile-last-user.txt";
 const ADD_AMOUNTS: [u32; 5] = [15, 30, 45, 60, 120];
 
 // Field IDs, in display order.
@@ -150,9 +153,12 @@ impl Credential {
             _ => (Vec::new(), None),
         };
         let admin_sel = last.and_then(|l| admins.iter().position(|a| *a == l)).unwrap_or(0) as u32;
+        let last_who = std::fs::read_to_string(LAST_WHO_FILE).unwrap_or_default();
+        let who = users.iter().position(|u| u.username.eq_ignore_ascii_case(last_who.trim())).unwrap_or(0) as u32;
+        let status = users.get(who as usize).map(describe).unwrap_or(status);
         Credential {
             users: RefCell::new(users),
-            who: RefCell::new(0),
+            who: RefCell::new(who),
             add: RefCell::new(1),
             status: RefCell::new(status),
             admins: RefCell::new(admins),
@@ -328,6 +334,9 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             match id {
                 F_WHO if (item as usize) < self.users.borrow().len() => {
                     *self.who.borrow_mut() = item;
+                    if let Some(u) = self.users.borrow().get(item as usize) {
+                        let _ = std::fs::write(LAST_WHO_FILE, &u.username);
+                    }
                     let text = self.users.borrow().get(item as usize).map(describe).unwrap_or_default();
                     self.set_status(&text);
                 }
