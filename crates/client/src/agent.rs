@@ -579,6 +579,12 @@ impl<P: Platform> Agent<P> {
         if minutes == 0 || minutes > 24 * 60 {
             return error("Choose between 1 minute and 24 hours.");
         }
+        // A lock is the parent's call from the web UI, and only undone there.
+        let locked = self.state.lock().await.policies.get(&username).is_some_and(|p| p.locked);
+        if locked {
+            tracing::warn!(%admin, user = %username, "refused \"my parent is here\" grant: locked");
+            return error("A parent has locked this computer. Only they can unlock it, from Screen time.");
+        }
         {
             let mut failures = self.parent_failures.lock().await;
             failures.retain(|at| at.elapsed() < PARENT_LOCKOUT);
@@ -702,6 +708,31 @@ mod tests {
         a.tracking.lock().await.get_mut("kid").unwrap().denied_since = Some(Instant::now() - FRESH_SIGN_IN_GRACE);
         a.enforce("kid", &session(), OUT).await;
         assert_eq!(*a.platform.log.lock().unwrap(), ["lock 1"; 4]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn no_time_can_be_approved_while_locked() {
+        use argon2::password_hash::{PasswordHasher, SaltString};
+        let dir = tempfile::tempdir().unwrap();
+        let a = agent(dir.path(), Duration::from_secs(120));
+        let salt = SaltString::encode_b64(b"0123456789abcdef").unwrap();
+        let hash = argon2::Argon2::default().hash_password(b"4321", &salt).unwrap().to_string();
+        {
+            let mut state = a.state.lock().await;
+            state.parent_pin_hash = Some(hash);
+            let policy = screentime_common::Policy {
+                username: "kid".into(),
+                day: a.now().date(),
+                daily_allowance_minutes: Some(0),
+                bonus_minutes: 0,
+                downtime: Vec::new(),
+                locked: true,
+            };
+            state.policies.insert("kid".into(), policy);
+        }
+        let grant = SocketRequest::ParentGrant { username: "kid".into(), minutes: 30, admin: "dad".into(), password: "4321".into() };
+        assert!(matches!(a.answer(grant).await, SocketResponse::Error { .. }));
+        assert_eq!(a.state.lock().await.local_bonus("kid", a.now().date()), 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]
