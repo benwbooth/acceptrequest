@@ -1,6 +1,7 @@
 //! Runs in the kid's session (started by the service). Shows time warnings as a small toast in
-//! the lower-right corner that never takes focus, and a tray icon to ask for more time or to
-//! let a parent approve time on the spot.
+//! the lower-right corner that never takes focus, and a tray icon to see the time left and ask for
+//! more. A parent approves time on the spot only at the sign-in screen's tile: anything typed in
+//! the kid's own session could be read by a program the kid runs.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(windows)]
@@ -18,11 +19,6 @@ mod tray {
         EndPaint, FillRect, InvalidateRect, PAINTSTRUCT, SelectObject, SetBkMode, SetTextColor, TRANSPARENT,
         FW_NORMAL, FW_SEMIBOLD, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
     };
-    use windows::Win32::Security::Credentials::{
-        CREDUI_INFOW, CREDUIWIN_ENUMERATE_ADMINS, CRED_PACK_FLAGS,
-        CredPackAuthenticationBufferW, CredUIPromptForWindowsCredentialsW, CredUnPackAuthenticationBufferW,
-    };
-    use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Registry::{
         HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_DWORD, REG_VALUE_TYPE, RegCloseKey, RegEnumKeyExW,
@@ -34,7 +30,7 @@ mod tray {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, GetCursorPos,
-        GetMessageW, HWND_TOPMOST, IDI_APPLICATION, KillTimer, LoadIconW, MF_GRAYED, MF_POPUP, MF_SEPARATOR,
+        GetMessageW, HWND_TOPMOST, IDI_APPLICATION, KillTimer, LoadIconW, MF_GRAYED, MF_SEPARATOR,
         MF_STRING, MSG, PostMessageW, RegisterClassW, RegisterWindowMessageW, SPI_GETWORKAREA, SW_HIDE, SW_SHOWNOACTIVATE,
         SWP_NOACTIVATE, SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
         SystemParametersInfoW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, TPM_RETURNCMD, TPM_RIGHTBUTTON,
@@ -51,9 +47,7 @@ mod tray {
     const TOAST_MARGIN: i32 = 16;
     const TOAST_TIMER: usize = 1;
     const TOAST_SECONDS: u32 = 8;
-    const PARENT_AMOUNTS: [u32; 4] = [15, 30, 60, 120];
     const CMD_REQUEST: usize = 100;
-    const CMD_PARENT: usize = 200;
 
     static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
     static TOAST_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -243,82 +237,6 @@ mod tray {
         }
     }
 
-    /// Windows' own credential dialog; returns (user, password).
-    fn prompt_parent(hwnd: HWND, minutes: u32) -> Option<(String, String)> {
-        let caption = wide("My parent is here");
-        let message = wide(&format!("Enter the parent PIN to add {} of screen time.", fmt_minutes(minutes)));
-        let info = CREDUI_INFOW {
-            cbSize: size_of::<CREDUI_INFOW>() as u32,
-            hwndParent: hwnd,
-            pszMessageText: pcwstr(&message),
-            pszCaptionText: pcwstr(&caption),
-            ..Default::default()
-        };
-        // Offer the computer's administrator accounts to pick from, starting with the last one used.
-        let last = match ask(&SocketRequest::ListAdmins) {
-            Ok(SocketResponse::Admins { last, .. }) => last,
-            _ => None,
-        };
-        let mut prefill: Vec<u8> = Vec::new();
-        if let Some(last) = &last {
-            let (user, empty) = (wide(last), wide(""));
-            let mut size = 0u32;
-            unsafe {
-                let _ = CredPackAuthenticationBufferW(CRED_PACK_FLAGS(0), pcwstr(&user), pcwstr(&empty), None, &mut size);
-                prefill.resize(size as usize, 0);
-                if CredPackAuthenticationBufferW(CRED_PACK_FLAGS(0), pcwstr(&user), pcwstr(&empty), Some(prefill.as_mut_ptr()), &mut size).is_err() {
-                    prefill.clear();
-                }
-            }
-        }
-        let mut package = 0u32;
-        let mut out: *mut core::ffi::c_void = std::ptr::null_mut();
-        let mut out_size = 0u32;
-        let rc = unsafe {
-            CredUIPromptForWindowsCredentialsW(
-                Some(&info),
-                0,
-                &mut package,
-                (!prefill.is_empty()).then_some(prefill.as_ptr() as *const _),
-                prefill.len() as u32,
-                &mut out,
-                &mut out_size,
-                None,
-                CREDUIWIN_ENUMERATE_ADMINS,
-            )
-        };
-        if rc != 0 {
-            return None;
-        }
-        let (mut user, mut domain, mut pass) = ([0u16; 514], [0u16; 256], [0u16; 256]);
-        let (mut ul, mut dl, mut pl) = (user.len() as u32, domain.len() as u32, pass.len() as u32);
-        let ok = unsafe {
-            CredUnPackAuthenticationBufferW(
-                CRED_PACK_FLAGS(0),
-                out,
-                out_size,
-                Some(PWSTR(user.as_mut_ptr())),
-                &mut ul,
-                Some(PWSTR(domain.as_mut_ptr())),
-                Some(&mut dl),
-                Some(PWSTR(pass.as_mut_ptr())),
-                &mut pl,
-            )
-        }
-        .is_ok();
-        unsafe {
-            std::ptr::write_bytes(out as *mut u8, 0, out_size as usize);
-            CoTaskMemFree(Some(out));
-        }
-        let (user_s, domain_s, pass_s) = (from_wide(&user), from_wide(&domain), from_wide(&pass));
-        pass.fill(0);
-        if !ok || user_s.is_empty() {
-            return None;
-        }
-        let user_s = if domain_s.is_empty() { user_s } else { format!("{domain_s}\\{user_s}") };
-        Some((user_s, pass_s))
-    }
-
     fn show_menu(hwnd: HWND) {
         unsafe {
             let Ok(menu) = CreatePopupMenu() else { return };
@@ -327,16 +245,6 @@ mod tray {
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             let request = wide("Request more time");
             let _ = AppendMenuW(menu, MF_STRING, CMD_REQUEST, pcwstr(&request));
-            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-            if let Ok(parent) = CreatePopupMenu() {
-                let labels: Vec<Vec<u16>> =
-                    PARENT_AMOUNTS.iter().map(|m| wide(&format!("Add {}", fmt_minutes(*m)))).collect();
-                for (i, label) in labels.iter().enumerate() {
-                    let _ = AppendMenuW(parent, MF_STRING, CMD_PARENT + i, pcwstr(label));
-                }
-                let title = wide("My parent is here");
-                let _ = AppendMenuW(menu, MF_POPUP, parent.0 as usize, pcwstr(&title));
-            }
             let mut pt = POINT::default();
             let _ = GetCursorPos(&mut pt);
             // Required so the menu closes when clicking elsewhere; only happens on a deliberate click.
@@ -348,14 +256,6 @@ mod tray {
                     std::thread::spawn(move || {
                         report(ask(&SocketRequest::RequestTime { username: username(), minutes: None, reason: None }))
                     });
-                }
-                c if (CMD_PARENT..CMD_PARENT + PARENT_AMOUNTS.len()).contains(&c) => {
-                    let minutes = PARENT_AMOUNTS[c - CMD_PARENT];
-                    if let Some((admin, password)) = prompt_parent(hwnd, minutes) {
-                        std::thread::spawn(move || {
-                            report(ask(&SocketRequest::ParentGrant { username: username(), minutes, admin, password }))
-                        });
-                    }
                 }
                 _ => {}
             }
