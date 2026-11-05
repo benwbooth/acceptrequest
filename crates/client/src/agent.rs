@@ -727,6 +727,7 @@ mod tests {
                 bonus_minutes: 0,
                 downtime: Vec::new(),
                 locked: true,
+                taken_minutes: 0,
             };
             state.policies.insert("kid".into(), policy);
         }

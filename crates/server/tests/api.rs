@@ -631,3 +631,22 @@ async fn sessions_end_after_five_idle_minutes() {
     assert_eq!(s.call("POST", "/api/keepalive", Some(&cookie), None).await.0, StatusCode::UNAUTHORIZED);
     assert_eq!(background().await.unwrap().status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn taking_time_away_comes_off_time_approved_at_the_computer() {
+    // 120 minutes approved at pc1 with the PIN, 30 used; the parent takes 100 away on the web.
+    let s = server(Config::default()).await;
+    let pc1 = db::add_client(&s.state.db, "pc1").await.unwrap();
+    let pc2 = db::add_client(&s.state.db, "pc2").await.unwrap();
+    let today = Local::now().date_naive();
+    let uid = db::ensure_user(&s.state.db, "kid", 0).await.unwrap();
+    let report = UsageReport { username: "kid".into(), host: "x".into(), day: today, active_minutes: 30, local_bonus_minutes: 120 };
+    s.call("POST", "/api/client/usage", Some(&pc1), Some(serde_json::to_value(&report).unwrap())).await;
+    db::add_bonus(&s.state.db, uid, today, -100, "web").await.unwrap();
+
+    let p1 = s.policy(&pc1, "kid").await;
+    assert_eq!((p1.daily_allowance_minutes, p1.bonus_minutes, p1.taken_minutes), (Some(0), 0, 100));
+    // pc1: 120 approved there - 100 taken - 30 used = nothing left.
+    let p2 = s.policy(&pc2, "kid").await;
+    assert_eq!(p2.daily_allowance_minutes.unwrap() + p2.bonus_minutes, 0);
+}

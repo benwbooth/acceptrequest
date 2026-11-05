@@ -92,6 +92,10 @@ pub struct Policy {
     /// A parent has locked this kid out of this computer (or all of them) until they unlock it.
     #[serde(default)]
     pub locked: bool,
+    /// Time taken away from the web UI beyond what the server's own numbers can absorb; it comes
+    /// off time a parent approved at this computer.
+    #[serde(default)]
+    pub taken_minutes: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,8 +163,9 @@ pub fn evaluate(policy: Option<&Policy>, now: NaiveDateTime, used_minutes: u32) 
     Decision::Allowed { remaining_minutes }
 }
 
-/// Apply a parent's on-the-spot grant: until `override_until` the user may be signed in
-/// even when out of time or in downtime.
+/// Apply a parent's on-the-spot grant: until `override_until` the user may be signed in even in
+/// downtime. The granted minutes themselves are counted like any other added time, so running
+/// out of them (or having them taken away from the web UI) still ends the session.
 pub fn apply_override(decision: Decision, now: NaiveDateTime, override_until: Option<NaiveDateTime>) -> Decision {
     let Some(until) = override_until.filter(|u| *u > now) else {
         return decision;
@@ -171,10 +176,10 @@ pub fn apply_override(decision: Decision, now: NaiveDateTime, override_until: Op
     }
     let by_override = (until - now).num_minutes().max(1) as u32;
     match decision {
-        Decision::Denied { .. } => Decision::Allowed { remaining_minutes: Some(by_override) },
-        Decision::Allowed { remaining_minutes } => Decision::Allowed {
-            remaining_minutes: remaining_minutes.map(|r| r.max(by_override)),
-        },
+        Decision::Denied { reason: DenyReason::Downtime { .. } | DenyReason::NoPolicy } => {
+            Decision::Allowed { remaining_minutes: Some(by_override) }
+        }
+        other => other,
     }
 }
 
@@ -308,6 +313,7 @@ mod tests {
             day: NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(),
             daily_allowance_minutes: Some(120),
             bonus_minutes: 30,
+            taken_minutes: 0,
             downtime: vec![DowntimeWindow {
                 days: vec![Sun, Mon, Tue, Wed, Thu],
                 start: t("21:00"),
@@ -406,11 +412,24 @@ mod tests {
         // An expired override changes nothing.
         assert_eq!(apply_override(denied.clone(), now, Some(at("2026-11-02", "21:30"))), denied);
 
+        // Before downtime the kid's own time counts as usual; the override takes over at 21:00.
         let now = at("2026-11-02", "20:45");
         assert_eq!(
             apply_override(evaluate(Some(&p), now, 0), now, Some(at("2026-11-02", "21:15"))),
-            Decision::Allowed { remaining_minutes: Some(30) }
+            Decision::Allowed { remaining_minutes: Some(15) }
         );
+    }
+
+    #[test]
+    fn time_approved_at_the_computer_runs_out_like_any_other() {
+        // Not downtime, out of time: an unexpired override doesn't keep the kid on.
+        let mut p = policy();
+        p.daily_allowance_minutes = Some(0);
+        p.bonus_minutes = 0;
+        let now = at("2026-11-02", "12:00");
+        let out = evaluate(Some(&p), now, 0);
+        assert_eq!(out, Decision::Denied { reason: DenyReason::OutOfTime });
+        assert_eq!(apply_override(out.clone(), now, Some(at("2026-11-02", "14:00"))), out);
     }
 
     #[test]

@@ -116,7 +116,7 @@ impl State {
                     p.day = today;
                     p.bonus_minutes = 0;
                 }
-                p.bonus_minutes += local;
+                p.bonus_minutes += local.saturating_sub(p.taken_minutes);
                 Some(p)
             }
             // A parent can grant time before the machine has ever heard from the server.
@@ -127,6 +127,7 @@ impl State {
                 bonus_minutes: local,
                 downtime: Vec::new(),
                 locked: false,
+                taken_minutes: 0,
             }),
         };
         let override_until = self.local_grants.get(user).and_then(|g| g.override_until);

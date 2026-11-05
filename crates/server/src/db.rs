@@ -190,15 +190,16 @@ pub async fn policy_for(db: &SqlitePool, user: i64, username: &str, host: &str, 
     // computer it was added at counts its own.
     let local_elsewhere: i64 = elsewhere.iter().map(|u| u.local_bonus_minutes as i64).sum();
     let bonus = bonus(db, user, today).await? + local_elsewhere;
-    let (allowance, bonus) = match allowance {
-        // Time taken away comes off the day's limit; it can't go below nothing.
-        Some(a) if bonus < 0 => (Some((a as i64 + bonus - used_elsewhere as i64).max(0) as u32), 0),
+    let (allowance, bonus, taken) = match allowance {
         Some(a) => {
-            let bonus = bonus as u32;
-            (Some(a.saturating_sub(used_elsewhere)), bonus.saturating_sub(used_elsewhere.saturating_sub(a)))
+            // What's left before this computer's own use and its own approvals, which it adds
+            // itself. Below zero, the rest comes off time approved at this computer.
+            let left = a as i64 + bonus - used_elsewhere as i64;
+            let a_left = (a as i64 - used_elsewhere as i64).clamp(0, left.max(0));
+            (Some(a_left as u32), (left.max(0) - a_left) as u32, (-left).max(0) as u32)
         }
         // No daily limit: adjustments don't matter.
-        None => (None, bonus.max(0) as u32),
+        None => (None, bonus.max(0) as u32, 0),
     };
     Ok(Policy {
         username: username.to_owned(),
@@ -207,6 +208,7 @@ pub async fn policy_for(db: &SqlitePool, user: i64, username: &str, host: &str, 
         bonus_minutes: bonus,
         downtime: downtime(db, user).await?,
         locked: is_locked(db, user, host).await?,
+        taken_minutes: taken,
     })
 }
 
