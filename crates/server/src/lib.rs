@@ -13,6 +13,7 @@ pub mod push;
 pub mod request_page;
 
 use axum::Router;
+use axum::http::{HeaderValue, header};
 use config::Config;
 use notify::Notifier;
 use sqlx::SqlitePool;
@@ -45,7 +46,7 @@ const CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; sty
     img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 pub fn router(state: AppState) -> Router {
-    use axum::http::{HeaderName, HeaderValue, header};
+    use axum::http::HeaderName;
     use tower_http::set_header::SetResponseHeaderLayer;
 
     let web_dir = state.config.web_dir.clone();
@@ -58,7 +59,13 @@ pub fn router(state: AppState) -> Router {
     match web_dir {
         Some(dir) => {
             let index = tower_http::services::ServeFile::new(dir.join("index.html"));
-            app = app.fallback_service(tower_http::services::ServeDir::new(dir).fallback(index));
+            let etag = web_etag(&dir);
+            let files = tower_http::services::ServeDir::new(&dir).fallback(index);
+            app = app.fallback_service(
+                tower::ServiceBuilder::new()
+                    .layer(axum::middleware::from_fn(move |req, next| revalidate(etag.clone(), req, next)))
+                    .service(files),
+            );
         }
         None => tracing::warn!("no web UI found; set SCREENTIME_WEB_DIR to serve it"),
     }
@@ -71,6 +78,34 @@ pub fn router(state: AppState) -> Router {
         .layer(header(header::REFERRER_POLICY, "no-referrer"))
         .layer(header(header::CACHE_CONTROL, "no-cache"))
         .layer(tower_http::compression::CompressionLayer::new())
+}
+
+/// One tag for the whole web UI, from its files' contents. Files in the nix store all date from
+/// 1970, so revalidating by date would keep a phone on an old copy of the app forever.
+fn web_etag(dir: &std::path::Path) -> HeaderValue {
+    use sha2::{Digest, Sha256};
+    let mut paths: Vec<_> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    paths.sort();
+    let mut hash = Sha256::new();
+    for path in paths {
+        hash.update(path.file_name().unwrap_or_default().as_encoded_bytes());
+        hash.update(std::fs::read(&path).unwrap_or_default());
+    }
+    HeaderValue::from_str(&format!("\"{}\"", &hex::encode(hash.finalize())[..16])).expect("hex is a valid header")
+}
+
+async fn revalidate(etag: HeaderValue, mut req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if req.headers().get(header::IF_NONE_MATCH) == Some(&etag) {
+        return (axum::http::StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response();
+    }
+    req.headers_mut().remove(header::IF_MODIFIED_SINCE);
+    let mut res = next.run(req).await;
+    res.headers_mut().remove(header::LAST_MODIFIED);
+    if res.status().is_success() {
+        res.headers_mut().insert(header::ETAG, etag);
+    }
+    res
 }
 
 /// Open (creating if needed) the database and bring its schema up to date.

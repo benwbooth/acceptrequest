@@ -542,3 +542,31 @@ async fn parent_pin_reaches_the_computers() {
     s.call("PUT", "/api/parent-pin", me, Some(json!({"pin": null}))).await;
     assert_eq!(reply(s.call("POST", "/api/client/accounts", Some(&pc1), Some(report)).await.2), Value::Null);
 }
+
+#[tokio::test]
+async fn web_ui_revalidates_by_content_not_date() {
+    let web = tempfile::tempdir().unwrap();
+    std::fs::write(web.path().join("index.html"), "<html>v1</html>").unwrap();
+    let s = server(Config { web_dir: Some(web.path().into()), ..Config::default() }).await;
+    let get = |headers: Vec<(header::HeaderName, String)>| {
+        let mut req = Request::get("/index.html");
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
+        s.app.clone().oneshot(req.body(Body::empty()).unwrap())
+    };
+    let first = get(vec![]).await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    assert!(first.headers().get(header::LAST_MODIFIED).is_none());
+    let etag = first.headers()[header::ETAG].to_str().unwrap().to_owned();
+    assert_eq!(get(vec![(header::IF_NONE_MATCH, etag.clone())]).await.unwrap().status(), StatusCode::NOT_MODIFIED);
+    // A browser holding a date from before still gets the file.
+    let since = (header::IF_MODIFIED_SINCE, "Thu, 01 Jan 2099 00:00:00 GMT".to_owned());
+    assert_eq!(get(vec![since]).await.unwrap().status(), StatusCode::OK);
+
+    // A new build is a new tag.
+    std::fs::write(web.path().join("index.html"), "<html>v2</html>").unwrap();
+    let s2 = server(Config { web_dir: Some(web.path().into()), ..Config::default() }).await;
+    let req = Request::get("/").header(header::IF_NONE_MATCH, &etag).body(Body::empty()).unwrap();
+    assert_eq!(s2.app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
+}
