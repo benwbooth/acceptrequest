@@ -14,7 +14,9 @@ param(
   # Local account names; use local=server (e.g. ryany=ryan) when the server knows them by another name.
   [Parameter(Mandatory)] [string[]] $Users,
   [string] $Fingerprint,
-  [int] $GraceSeconds = 120
+  [int] $GraceSeconds = 120,
+  # Sign kids out after the grace period instead of leaving their session locked.
+  [switch] $SignOut
 )
 $ErrorActionPreference = 'Stop'
 
@@ -76,7 +78,8 @@ $config = @(
   "SCREENTIME_SERVER=$Server",
   "SCREENTIME_TOKEN_FILE=$(Join-Path $data 'token')",
   "SCREENTIME_USERS=$($entries -join ',')",
-  "SCREENTIME_GRACE_SECS=$GraceSeconds"
+  "SCREENTIME_GRACE_SECS=$GraceSeconds",
+  "SCREENTIME_SIGN_OUT=$(if ($SignOut) { 'true' } else { 'false' })"
 )
 if ($Fingerprint) { $config += "SCREENTIME_SERVER_FINGERPRINT=$Fingerprint" }
 Set-Content -Path (Join-Path $data 'config.env') -Value $config

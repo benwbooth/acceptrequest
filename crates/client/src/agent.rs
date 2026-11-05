@@ -363,7 +363,7 @@ impl<P: Platform> Agent<P> {
                             tracing::warn!(user, session = %s.id, "lock failed: {e:#}");
                         }
                     }
-                    if t.denied_since.is_some() {
+                    if t.denied_since.is_some() && self.config.sign_out {
                         if let Err(e) = self.platform.end_sessions(user, sessions).await {
                             tracing::error!(user, "ending sessions failed: {e:#}");
                         }
@@ -383,7 +383,7 @@ impl<P: Platform> Agent<P> {
                         tracing::warn!(user, session = %s.id, "lock failed: {e:#}");
                     }
                 }
-                if since.elapsed() >= self.config.grace {
+                if self.config.sign_out && since.elapsed() >= self.config.grace {
                     tracing::info!(user, "grace period over, ending sessions");
                     if let Err(e) = self.platform.end_sessions(user, sessions).await {
                         tracing::error!(user, "ending sessions failed: {e:#}");
@@ -674,6 +674,7 @@ mod tests {
             state_dir: dir.into(),
             socket: dir.join("s"),
             grace,
+            sign_out: true,
             host: "test".into(),
             admin_group: "wheel".into(),
             pam_service: "x".into(),
@@ -699,6 +700,22 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(60)).await;
         a.enforce("kid", &session(), OUT).await;
         assert_eq!(*a.platform.log.lock().unwrap(), ["lock 1", "lock 1", "end kid"]);
+    }
+
+    #[tokio::test]
+    async fn without_sign_out_sessions_stay_locked_and_are_relocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = agent(dir.path(), Duration::from_millis(1));
+        Arc::get_mut(&mut a).unwrap().config.sign_out = false;
+        a.enforce("kid", &session(), OK).await;
+        a.enforce("kid", &session(), OUT).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        a.enforce("kid", &session(), OUT).await; // unlocked again: locked again
+        a.enforce("kid", &[], OUT).await;
+        a.enforce("kid", &session(), OUT).await; // signed in fresh: locked
+        a.tracking.lock().await.get_mut("kid").unwrap().denied_since = Some(Instant::now() - FRESH_SIGN_IN_GRACE);
+        a.enforce("kid", &session(), OUT).await;
+        assert_eq!(*a.platform.log.lock().unwrap(), ["lock 1"; 4]);
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -18,8 +18,12 @@ pub struct Config {
     pub server_names: std::collections::HashMap<String, String>,
     pub state_dir: PathBuf,
     pub socket: PathBuf,
-    /// How long a session stays locked after time runs out before it is terminated.
+    /// How long a session stays locked after time runs out before it is signed out, when
+    /// `sign_out` is on.
     pub grace: Duration,
+    /// Sign kids out once the grace period is over. Off by default: their sessions stay locked,
+    /// with everything still open, and are locked again whenever they're unlocked.
+    pub sign_out: bool,
     pub host: String,
     /// Members of this group can approve time on the spot with "My parent is here".
     pub admin_group: String,
@@ -68,6 +72,7 @@ impl Config {
             state_dir: var("SCREENTIME_STATE_DIR").unwrap_or_else(|| DEFAULT_STATE_DIR.into()).into(),
             socket: var("SCREENTIME_SOCKET").unwrap_or_else(|| DEFAULT_SOCKET.into()).into(),
             grace: Duration::from_secs(grace_secs),
+            sign_out: matches!(var("SCREENTIME_SIGN_OUT").as_deref(), Some("1" | "true" | "yes" | "on")),
             host: hostname(),
             admin_group: var("SCREENTIME_ADMIN_GROUP").unwrap_or_else(|| DEFAULT_ADMIN_GROUP.into()),
             pam_service: var("SCREENTIME_PAM_SERVICE").unwrap_or_else(|| "screentime".into()),

@@ -47,7 +47,12 @@ in
     graceSeconds = lib.mkOption {
       type = lib.types.ints.positive;
       default = 120;
-      description = "How long a session stays locked after time runs out before it is ended.";
+      description = "With signOut, how long a session stays locked after time runs out before it is ended.";
+    };
+    signOut = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Sign kids out after the grace period. Off: their sessions just stay locked.";
     };
     pamServices = lib.mkOption {
       type = lib.types.listOf lib.types.str;
@@ -92,6 +97,7 @@ in
       environment = {
         SCREENTIME_USERS = usersArg;
         SCREENTIME_GRACE_SECS = toString cfg.graceSeconds;
+        SCREENTIME_SIGN_OUT = lib.boolToString cfg.signOut;
         SCREENTIME_ADMIN_GROUP = cfg.adminGroup;
       } // lib.optionalAttrs (cfg.serverUrl != null) {
         SCREENTIME_SERVER = cfg.serverUrl;
