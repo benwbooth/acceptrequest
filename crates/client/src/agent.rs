@@ -81,8 +81,6 @@ pub trait Platform: Send + Sync + 'static {
     fn admins(&self) -> Vec<String> {
         Vec::new()
     }
-    /// Check that `admin` may approve time and that `password` is theirs. Blocking.
-    fn verify_admin(&self, admin: &str, password: &str) -> Result<(), String>;
     /// Called each tick for a session whose user is allowed to be on, e.g. to make sure the
     /// warning app is running in it. Default: nothing.
     fn on_allowed_session(&self, _session: &Session) {}
@@ -240,7 +238,6 @@ impl<P: Platform> Agent<P> {
         let mut state = self.state.lock().await;
         state.account_map = Some(new.mappings());
         state.parent_pin_hash = reply.parent_pin_hash;
-        state.admin_password_hash = reply.admin_password_hash;
     }
 
     /// Check sessions now instead of at the next regular tick.
@@ -592,35 +589,18 @@ impl<P: Platform> Agent<P> {
             failures.push(Instant::now());
         }
 
-        // The parent PIN or sign-in password from the web UI, or an administrator's own
-        // password. A limited account fails exactly like a wrong password.
-        let hashes: Vec<String> = {
-            let state = self.state.lock().await;
-            state.parent_pin_hash.iter().chain(&state.admin_password_hash).cloned().collect()
+        // Only the parent PIN set in the web UI: no account password is ever typed at a
+        // computer the kids use. A limited account fails exactly like a wrong PIN.
+        let Some(pin_hash) = self.state.lock().await.parent_pin_hash.clone() else {
+            self.parent_failures.lock().await.pop();
+            return error("No parent PIN is set yet. Set one in Screen time under Account.");
         };
-        let names = ["the parent PIN", "the Screen time web password"];
-        let pin_set = self.state.lock().await.parent_pin_hash.is_some();
-        let method = if self.is_managed(&admin) {
-            None
-        } else {
-            tokio::task::block_in_place(|| {
-                // Which secret worked is logged, so a leaked one can be found and changed.
-                if let Some(i) = hashes.iter().position(|h| pin_matches(h, &password)) {
-                    Some(names[if pin_set { i } else { 1 }])
-                } else {
-                    self.platform
-                        .verify_admin(&admin, &password)
-                        .inspect_err(|e| tracing::warn!("parent check failed: {e}"))
-                        .is_ok()
-                        .then_some("the parent's Windows password")
-                }
-            })
-        };
-        let Some(method) = method else {
+        let verified = !self.is_managed(&admin) && tokio::task::block_in_place(|| pin_matches(&pin_hash, &password));
+        if !verified {
             tracing::warn!(%admin, user = %username, "refused \"my parent is here\" grant");
             tokio::time::sleep(PARENT_FAILURE_DELAY).await;
-            return error("That name and password can't approve time.");
-        };
+            return error("That PIN isn't right.");
+        }
 
         self.parent_failures.lock().await.clear();
         let mut state = self.state.lock().await;
@@ -629,7 +609,7 @@ impl<P: Platform> Agent<P> {
         if let Err(e) = state.save(&self.config.state_dir) {
             tracing::error!("saving state failed: {e:#}");
         }
-        tracing::info!(%admin, user = %username, minutes, with = method, "parent granted time locally");
+        tracing::info!(%admin, user = %username, minutes, "parent granted time locally with the PIN");
         SocketResponse::Granted { minutes }
     }
 }
@@ -666,9 +646,6 @@ mod tests {
         async fn end_sessions(&self, user: &str, _: &[Session]) -> Result<()> {
             self.log.lock().unwrap().push(format!("end {user}"));
             Ok(())
-        }
-        fn verify_admin(&self, _: &str, _: &str) -> Result<(), String> {
-            Err("no".into())
         }
     }
 
@@ -734,17 +711,15 @@ mod tests {
         let a = agent(dir.path(), Duration::from_secs(120));
         let salt = SaltString::encode_b64(b"0123456789abcdef").unwrap();
         let hash = argon2::Argon2::default().hash_password(b"4321", &salt).unwrap().to_string();
-        let web = argon2::Argon2::default().hash_password(b"web password", &salt).unwrap().to_string();
-        a.state.lock().await.parent_pin_hash = Some(hash);
-        a.state.lock().await.admin_password_hash = Some(web);
         let grant = |pw: &str| SocketRequest::ParentGrant {
             username: "kid".into(),
             minutes: 15,
             admin: "dad".into(),
             password: pw.into(),
         };
+        assert!(matches!(a.answer(grant("4321")).await, SocketResponse::Error { .. }), "no PIN set yet");
+        a.state.lock().await.parent_pin_hash = Some(hash);
         assert_eq!(a.answer(grant("4321")).await, SocketResponse::Granted { minutes: 15 });
-        assert_eq!(a.answer(grant("web password")).await, SocketResponse::Granted { minutes: 15 });
         assert!(matches!(a.answer(grant("1234")).await, SocketResponse::Error { .. }));
     }
 

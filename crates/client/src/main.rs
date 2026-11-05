@@ -15,8 +15,6 @@ mod linux {
     struct Linux {
         logind: Logind,
         admin_group: String,
-        pam_service: String,
-        pam_confdir: Option<String>,
     }
 
     impl Platform for Linux {
@@ -62,13 +60,6 @@ mod linux {
         fn admins(&self) -> Vec<String> {
             parent::group_members(&self.admin_group).into_iter().filter(|u| u != "root").collect()
         }
-
-        fn verify_admin(&self, admin: &str, password: &str) -> Result<(), String> {
-            if admin == "root" || !parent::in_group(admin, &self.admin_group) {
-                return Err(format!("{admin} is not in {}", self.admin_group));
-            }
-            parent::authenticate(&self.pam_service, self.pam_confdir.as_deref(), admin, password)
-        }
     }
 
     fn bind_socket(path: &std::path::Path) -> Result<UnixListener> {
@@ -87,8 +78,6 @@ mod linux {
         let platform = Linux {
             logind: Logind::connect().await?,
             admin_group: config.admin_group.clone(),
-            pam_service: config.pam_service.clone(),
-            pam_confdir: config.pam_confdir.clone(),
         };
         let listener = bind_socket(&config.socket)?;
         let agent = Agent::new(config, platform)?;

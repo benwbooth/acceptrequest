@@ -128,10 +128,6 @@ impl Platform for Windows {
         local_admins()
     }
 
-    fn verify_admin(&self, admin: &str, password: &str) -> Result<(), String> {
-        verify_admin(admin, password)
-    }
-
     fn sync_os_restrictions(&self, user: &str, state: &State, now: DateTime<Utc>) {
         if !self.use_logon_hours || is_admin_account(user) {
             return;

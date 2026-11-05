@@ -107,7 +107,6 @@ async fn accounts(
     Ok(Json(AccountsReply {
         limited,
         parent_pin_hash: db::parent_pin_hash(&s.db).await?,
-        admin_password_hash: db::admin_password_hash(&s.db).await?.or_else(|| s.config.admin_password_hash.clone()),
     }))
 }
 

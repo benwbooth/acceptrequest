@@ -246,7 +246,7 @@ mod tray {
     /// Windows' own credential dialog; returns (user, password).
     fn prompt_parent(hwnd: HWND, minutes: u32) -> Option<(String, String)> {
         let caption = wide("My parent is here");
-        let message = wide(&format!("Enter the parent PIN (or a parent's password) to add {} of screen time.", fmt_minutes(minutes)));
+        let message = wide(&format!("Enter the parent PIN to add {} of screen time.", fmt_minutes(minutes)));
         let info = CREDUI_INFOW {
             cbSize: size_of::<CREDUI_INFOW>() as u32,
             hwndParent: hwnd,
