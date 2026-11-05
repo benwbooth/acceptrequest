@@ -122,6 +122,28 @@ async fn earned_bonus_time_is_shared_across_machines_too() {
 }
 
 #[tokio::test]
+async fn time_a_parent_added_at_a_computer_counts_everywhere() {
+    // Ryan's evening: 15 minutes approved at pc1, 11 used there, then 45 added from the web.
+    let s = server(Config { default_allowance_minutes: 0, ..with_password() }).await;
+    let pc1 = db::add_client(&s.state.db, "pc1").await.unwrap();
+    let pc2 = db::add_client(&s.state.db, "pc2").await.unwrap();
+    let today = Local::now().date_naive();
+    let uid = db::ensure_user(&s.state.db, "kid", 0).await.unwrap();
+    let report = UsageReport { username: "kid".into(), host: "x".into(), day: today, active_minutes: 11, local_bonus_minutes: 15 };
+    s.call("POST", "/api/client/usage", Some(&pc1), Some(serde_json::to_value(&report).unwrap())).await;
+    db::add_bonus(&s.state.db, uid, today, 45, "web").await.unwrap();
+
+    let total = |p: Policy| p.daily_allowance_minutes.unwrap() + p.bonus_minutes;
+    // pc1 adds its own 15 and takes off its own 11 itself.
+    assert_eq!(total(s.policy(&pc1, "kid").await), 45);
+    assert_eq!(total(s.policy(&pc2, "kid").await), 45 + 15 - 11);
+    let me = s.admin_cookie().await;
+    let overview: Value = serde_json::from_str(&s.call("GET", "/api/overview", Some(me.as_str()), None).await.2).unwrap();
+    let kid = overview["users"].as_array().unwrap().iter().find(|u| u["username"] == "kid").unwrap();
+    assert_eq!(kid["decision"]["remaining_minutes"], 49, "{kid}");
+}
+
+#[tokio::test]
 async fn notification_link_grants_once() {
     let s = server(Config::default()).await;
     let pc1 = db::add_client(&s.state.db, "pc1").await.unwrap();

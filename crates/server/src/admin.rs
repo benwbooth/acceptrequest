@@ -147,7 +147,7 @@ pub struct UserOverview {
     pub locks: Vec<String>,
     pub usage_today: Vec<HostUsage>,
     pub used_today: u32,
-    /// Where things stand across all machines, ignoring on-the-spot grants made at a machine.
+    /// Where things stand across all machines, counting time a parent added at a computer.
     pub decision: Decision,
 }
 

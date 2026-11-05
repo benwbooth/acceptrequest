@@ -184,13 +184,12 @@ pub async fn record_usage(db: &SqlitePool, user: i64, host: &str, report: &Usage
 /// so time used on other machines is taken off the day's allowance first, then off its bonus.
 pub async fn policy_for(db: &SqlitePool, user: i64, username: &str, host: &str, today: NaiveDate) -> Result<Policy> {
     let allowance = allowances(db, user).await?[today.weekday().num_days_from_monday() as usize];
-    let used_elsewhere: u32 = usage(db, user, today)
-        .await?
-        .iter()
-        .filter(|u| u.host != host)
-        .map(|u| u.active_minutes)
-        .sum();
-    let bonus = bonus(db, user, today).await?;
+    let elsewhere: Vec<HostUsage> = usage(db, user, today).await?.into_iter().filter(|u| u.host != host).collect();
+    let used_elsewhere: u32 = elsewhere.iter().map(|u| u.active_minutes).sum();
+    // Time a parent added at another computer counts everywhere, like time added here; the
+    // computer it was added at counts its own.
+    let local_elsewhere: i64 = elsewhere.iter().map(|u| u.local_bonus_minutes as i64).sum();
+    let bonus = bonus(db, user, today).await? + local_elsewhere;
     let (allowance, bonus) = match allowance {
         // Time taken away comes off the day's limit; it can't go below nothing.
         Some(a) if bonus < 0 => (Some((a as i64 + bonus - used_elsewhere as i64).max(0) as u32), 0),
