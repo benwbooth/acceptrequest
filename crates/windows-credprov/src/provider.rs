@@ -142,6 +142,10 @@ struct Credential {
     admins: RefCell<Vec<String>>,
     admin_sel: RefCell<u32>,
     password: RefCell<String>,
+    /// Whether the PIN box was typed into one key at a time from empty since it was last
+    /// cleared. The sign-in screen can keep a box's text after a parent used it; editing that
+    /// leftover would otherwise hand a kid the parent's PIN without knowing it.
+    typed_fresh: RefCell<bool>,
     events: RefCell<Option<ICredentialProviderCredentialEvents>>,
 }
 
@@ -164,6 +168,7 @@ impl Credential {
             admins: RefCell::new(admins),
             admin_sel: RefCell::new(admin_sel),
             password: RefCell::default(),
+            typed_fresh: RefCell::new(true),
             events: RefCell::default(),
         }
     }
@@ -228,6 +233,7 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
     fn SetDeselected(&self) -> Result<()> {
         guard(|| {
             self.password.borrow_mut().clear();
+            *self.typed_fresh.borrow_mut() = true;
             self.show(F_PASSWORD, "");
             Ok(())
         })
@@ -318,7 +324,13 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
         guard(|| {
             let text = if value.is_null() { String::new() } else { unsafe { value.to_string() }.unwrap_or_default() };
             match id {
-                F_PASSWORD => *self.password.borrow_mut() = text,
+                F_PASSWORD => {
+                    let mut password = self.password.borrow_mut();
+                    let one_key = typed_one_key(&password, &text);
+                    let mut fresh = self.typed_fresh.borrow_mut();
+                    *fresh = text.is_empty() || (*fresh && one_key);
+                    *password = text;
+                }
                 _ => return Err(E_INVALIDARG.into()),
             }
             Ok(())
@@ -373,11 +385,13 @@ impl ICredentialProviderCredential_Impl for Credential_Impl {
             }
             let admin = self.admins.borrow().get(*self.admin_sel.borrow() as usize).cloned().unwrap_or_default();
             let password = std::mem::take(&mut *self.password.borrow_mut());
+            let fresh = std::mem::replace(&mut *self.typed_fresh.borrow_mut(), true);
             self.show(F_PASSWORD, "");
             let (text, ok) = match self.selected_user() {
                 _ if admin.is_empty() || password.is_empty() => {
                     ("Enter the parent PIN.".to_string(), false)
                 }
+                _ if !fresh => ("Clear the PIN box and type the PIN again.".to_string(), false),
                 None => ("No account to add time for.".to_string(), false),
                 Some(username) => {
                     let minutes = ADD_AMOUNTS[*self.add.borrow() as usize];
@@ -566,4 +580,23 @@ pub unsafe extern "system" fn DllGetClassObject(clsid: *const GUID, iid: *const 
 pub extern "system" fn DllCanUnloadNow() -> HRESULT {
     // LogonUI keeps us loaded; never claim to be unloadable mid-use.
     S_FALSE
+}
+
+/// `new` is `old` with one character typed or deleted at the end, as keys do; not a paste or
+/// text the box already held.
+fn typed_one_key(old: &str, new: &str) -> bool {
+    let (o, n) = (old.chars().count(), new.chars().count());
+    (n == o + 1 && new.starts_with(old)) || (n + 1 == o && old.starts_with(new))
+}
+
+#[cfg(test)]
+mod typing_tests {
+    use super::typed_one_key;
+
+    #[test]
+    fn only_key_by_key_typing_counts() {
+        assert!(typed_one_key("", "1") && typed_one_key("12", "123") && typed_one_key("123", "12"));
+        // Leftover text being edited, or a whole PIN arriving at once.
+        assert!(!typed_one_key("", "1234") && !typed_one_key("", "12345") && !typed_one_key("12", "1x3"));
+    }
 }
