@@ -155,6 +155,16 @@ pub async fn overview() -> ApiResult<Overview> {
     get("/api/overview").await
 }
 
+/// The page's own periodic refresh, which doesn't count as the parent using it.
+pub async fn overview_in_background() -> ApiResult<Overview> {
+    json(check(Request::get("/api/overview").header("X-Screentime-Background", "1").send().await).await?).await
+}
+
+/// Tell the server the parent is still here, so it doesn't sign them out.
+pub async fn keepalive() -> ApiResult<()> {
+    send("POST", "/api/keepalive", &serde_json::json!({})).await.map(drop)
+}
+
 pub async fn add_user(username: &str) -> ApiResult<()> {
     send("POST", "/api/users", &serde_json::json!({ "username": username })).await.map(drop)
 }

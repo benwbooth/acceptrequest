@@ -481,13 +481,13 @@ pub async fn remove_client(db: &SqlitePool, hostname: &str) -> Result<bool> {
     Ok(r.rows_affected() > 0)
 }
 
-pub async fn create_session(db: &SqlitePool, days: i64) -> Result<String> {
+pub async fn create_session(db: &SqlitePool, idle: chrono::TimeDelta) -> Result<String> {
     let token = new_token();
     let created = Utc::now();
     sqlx::query("INSERT INTO sessions (token_hash, created_at, expires_at) VALUES (?, ?, ?)")
         .bind(hash_token(&token))
         .bind(created.to_rfc3339())
-        .bind((created + chrono::Duration::days(days)).to_rfc3339())
+        .bind((created + idle).to_rfc3339())
         .execute(db)
         .await?;
     sqlx::query("DELETE FROM sessions WHERE expires_at <= ?").bind(created.to_rfc3339()).execute(db).await?;

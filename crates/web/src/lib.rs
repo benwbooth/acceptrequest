@@ -90,8 +90,13 @@ struct Ctx {
 
 impl Ctx {
     fn refresh(self) {
+        self.load(false);
+    }
+
+    fn load(self, background: bool) {
         spawn_local(async move {
-            match api::overview().await {
+            let result = if background { api::overview_in_background().await } else { api::overview().await };
+            match result {
                 Ok(o) => {
                     self.overview.set(Some(o));
                     self.set_auth(Auth::SignedIn);
@@ -200,10 +205,11 @@ fn App() -> impl IntoView {
         loop {
             gloo_timers::future::TimeoutFuture::new(30_000).await;
             if ctx.auth.get_untracked() == Auth::SignedIn {
-                ctx.refresh();
+                ctx.load(true);
             }
         }
     });
+    watch_for_idle(ctx);
 
     view! {
         {move || match ctx.auth.get() {
@@ -215,6 +221,66 @@ fn App() -> impl IntoView {
             <div class="toast" class:bad=!ok role="status">{msg}</div>
         })}
     }
+}
+
+/// Sign out after IDLE_MS without a tap or key press, so a kid can't pick up a parent's phone or
+/// computer and give themselves time. The server enforces the same limit; this keeps it alive
+/// while the parent is busy on the page and shows the sign-in screen as soon as time is up.
+const IDLE_MS: f64 = 5.0 * 60.0 * 1000.0;
+const KEEPALIVE_MS: f64 = 60.0 * 1000.0;
+
+fn watch_for_idle(ctx: Ctx) {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let last_active = Rc::new(Cell::new(js_sys::Date::now()));
+    let last_ping = Rc::new(Cell::new(js_sys::Date::now()));
+
+    let check = {
+        let last_active = last_active.clone();
+        move || {
+            if ctx.auth.get_untracked() == Auth::SignedIn && js_sys::Date::now() - last_active.get() >= IDLE_MS {
+                spawn_local(async move {
+                    let _ = api::logout().await;
+                });
+                ctx.overview.set(None);
+                ctx.set_auth(Auth::SignedOut);
+                ctx.say("Signed out after 5 minutes without use", true);
+            }
+        }
+    };
+    let active = {
+        let check = check.clone();
+        move || {
+            // Coming back to a page left open counts as idle first, then as the start of new use.
+            check();
+            let now = js_sys::Date::now();
+            last_active.set(now);
+            if ctx.auth.get_untracked() == Auth::SignedIn && now - last_ping.get() >= KEEPALIVE_MS {
+                last_ping.set(now);
+                spawn_local(async move {
+                    if let Err(ApiError::Unauthorized) = api::keepalive().await {
+                        ctx.set_auth(Auth::SignedOut);
+                    }
+                });
+            }
+        }
+    };
+    // Leaked on purpose: these listen for the life of the page.
+    {
+        let active = active.clone();
+        std::mem::forget(window_event_listener(leptos::ev::pointerdown, move |_| active()));
+    }
+    std::mem::forget(window_event_listener(leptos::ev::keydown, move |_| active()));
+    {
+        let check = check.clone();
+        std::mem::forget(window_event_listener(leptos::ev::visibilitychange, move |_| check()));
+    }
+    spawn_local(async move {
+        loop {
+            gloo_timers::future::TimeoutFuture::new(15_000).await;
+            check();
+        }
+    });
 }
 
 #[component]

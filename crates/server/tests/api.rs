@@ -592,3 +592,41 @@ async fn web_ui_revalidates_by_content_not_date() {
     let req = Request::get("/").header(header::IF_NONE_MATCH, &etag).body(Body::empty()).unwrap();
     assert_eq!(s2.app.clone().oneshot(req).await.unwrap().status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn sessions_end_after_five_idle_minutes() {
+    let s = server(with_password()).await;
+    let cookie = s.admin_cookie().await;
+    let expires = || async {
+        sqlx::query_scalar::<_, String>("SELECT expires_at FROM sessions").fetch_one(&s.state.db).await.unwrap()
+    };
+    let in_minutes = |m: i64| (chrono::Utc::now() + chrono::TimeDelta::minutes(m)).to_rfc3339();
+    let db = s.state.db.clone();
+    let backdate = |at: String| {
+        let db = db.clone();
+        async move {
+            sqlx::query("UPDATE sessions SET expires_at = ?").bind(at).execute(&db).await.unwrap();
+        }
+    };
+    let background = || {
+        let req = Request::get("/api/overview")
+            .header(header::COOKIE, &cookie)
+            .header("X-Screentime-Background", "1")
+            .body(Body::empty())
+            .unwrap();
+        s.app.clone().oneshot(req)
+    };
+
+    assert!(expires().await <= in_minutes(5));
+    // The page's own refresh works but doesn't count as use...
+    backdate(in_minutes(1)).await;
+    assert_eq!(background().await.unwrap().status(), StatusCode::OK);
+    assert!(expires().await <= in_minutes(1));
+    // ...while anything the parent does starts the five minutes again.
+    assert_eq!(s.call("POST", "/api/keepalive", Some(&cookie), None).await.0, StatusCode::NO_CONTENT);
+    assert!(expires().await > in_minutes(4));
+    // Once they're up, the session is over.
+    backdate(in_minutes(-1)).await;
+    assert_eq!(s.call("POST", "/api/keepalive", Some(&cookie), None).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(background().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+}

@@ -1,6 +1,6 @@
 //! Admin API used by the web UI, behind the password-protected session cookie.
 
-use crate::auth::{Admin, SESSION_COOKIE, SESSION_DAYS, verify_password};
+use crate::auth::{Admin, SESSION_COOKIE, SESSION_IDLE, verify_password};
 use crate::client_api::valid_username;
 use crate::db::{self, Allowances, ClientRow, HostUsage, RequestRow};
 use crate::error::{AppError, AppResult};
@@ -25,6 +25,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/logout", post(logout))
         .route("/api/password", post(change_password))
         .route("/api/parent-pin", get(parent_pin).put(set_parent_pin))
+        .route("/api/keepalive", post(keepalive))
         .route("/api/overview", get(overview))
         .route("/api/users", post(add_user))
         .route("/api/users/{username}", get(user))
@@ -78,10 +79,8 @@ async fn check_password(s: &AppState, password: String) -> AppResult<bool> {
 
 fn session_cookie(s: &AppState, token: &str) -> String {
     let secure = if s.config.public_url.starts_with("https://") { "; Secure" } else { "" };
-    format!(
-        "{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{secure}",
-        SESSION_DAYS * 24 * 3600
-    )
+    // No Max-Age: the server ends the session after SESSION_IDLE without use.
+    format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict{secure}")
 }
 
 async fn login(State(s): State<AppState>, Json(body): Json<LoginBody>) -> AppResult<Response> {
@@ -91,7 +90,7 @@ async fn login(State(s): State<AppState>, Json(body): Json<LoginBody>) -> AppRes
     if !check_password(&s, body.password).await? {
         return Err(AppError::Unauthorized);
     }
-    let token = db::create_session(&s.db, SESSION_DAYS).await?;
+    let token = db::create_session(&s.db, SESSION_IDLE).await?;
     Ok(([(SET_COOKIE, session_cookie(&s, &token))], StatusCode::NO_CONTENT).into_response())
 }
 
@@ -112,7 +111,7 @@ async fn change_password(State(s): State<AppState>, _: Admin, Json(body): Json<P
     let hash = tokio::task::spawn_blocking(move || crate::auth::hash_password(&body.new)).await??;
     db::set_admin_password_hash(&s.db, &hash).await?;
     db::delete_all_sessions(&s.db).await?;
-    let token = db::create_session(&s.db, SESSION_DAYS).await?;
+    let token = db::create_session(&s.db, SESSION_IDLE).await?;
     tracing::info!("admin password changed; other sessions signed out");
     Ok(([(SET_COOKIE, session_cookie(&s, &token))], StatusCode::NO_CONTENT).into_response())
 }
@@ -437,6 +436,11 @@ async fn set_name(
 #[derive(Serialize)]
 struct PinState {
     set: bool,
+}
+
+/// The parent is still using the page: the Admin check itself pushes the idle sign-out back.
+async fn keepalive(_: Admin) -> StatusCode {
+    StatusCode::NO_CONTENT
 }
 
 async fn parent_pin(State(s): State<AppState>, _: Admin) -> AppResult<Json<PinState>> {

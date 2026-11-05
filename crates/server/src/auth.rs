@@ -11,7 +11,10 @@ use chrono::Utc;
 use sha2::{Digest, Sha256};
 
 pub const SESSION_COOKIE: &str = "screentime_session";
-pub const SESSION_DAYS: i64 = 30;
+/// Signed out after this long without the parent doing anything.
+pub const SESSION_IDLE: chrono::TimeDelta = chrono::TimeDelta::minutes(5);
+/// Sent by the web UI's own background refreshes, which mustn't keep a session alive.
+pub const BACKGROUND_HEADER: &str = "x-screentime-background";
 
 /// A fresh random token, hex encoded.
 pub fn new_token() -> String {
@@ -56,13 +59,26 @@ impl FromRequestParts<AppState> for Admin {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> AppResult<Admin> {
         let token = cookie_value(parts, SESSION_COOKIE).ok_or(AppError::Unauthorized)?;
-        let found: Option<(String,)> =
-            sqlx::query_as("SELECT token_hash FROM sessions WHERE token_hash = ? AND expires_at > ?")
+        let now = Utc::now();
+        let found = if parts.headers.contains_key(BACKGROUND_HEADER) {
+            sqlx::query("SELECT 1 FROM sessions WHERE token_hash = ? AND expires_at > ?")
                 .bind(hash_token(token))
-                .bind(Utc::now().to_rfc3339())
+                .bind(now.to_rfc3339())
                 .fetch_optional(&state.db)
-                .await?;
-        found.map(|_| Admin).ok_or(AppError::Unauthorized)
+                .await?
+                .is_some()
+        } else {
+            // Anything the parent does pushes the idle sign-out back.
+            sqlx::query("UPDATE sessions SET expires_at = ? WHERE token_hash = ? AND expires_at > ?")
+                .bind((now + SESSION_IDLE).to_rfc3339())
+                .bind(hash_token(token))
+                .bind(now.to_rfc3339())
+                .execute(&state.db)
+                .await?
+                .rows_affected()
+                > 0
+        };
+        if found { Ok(Admin) } else { Err(AppError::Unauthorized) }
     }
 }
 
