@@ -19,7 +19,8 @@ use tokio::sync::{Mutex, broadcast};
 
 /// How often sessions are checked. Usage is accumulated in seconds and stored in whole minutes.
 pub const TICK: Duration = Duration::from_secs(15);
-const SYNC: Duration = Duration::from_secs(60);
+/// How often the server is asked for changes, so a parent's lock or added time lands within seconds.
+const SYNC: Duration = Duration::from_secs(15);
 /// Minimum gap between two time requests from the same user.
 const REQUEST_COOLDOWN: Duration = Duration::from_secs(120);
 /// Upper bound on bytes read from one socket connection.
@@ -420,7 +421,11 @@ impl<P: Platform> Agent<P> {
                         if let Some(t) = server_time {
                             self.note_server_time(t);
                         }
-                        self.state.lock().await.policies.insert(user.clone(), p);
+                        let old = self.state.lock().await.policies.insert(user.clone(), p.clone());
+                        // Act on a lock, added time or taken time now rather than at the next tick.
+                        if old.as_ref() != Some(&p) {
+                            self.wake();
+                        }
                     }
                     Ok((p, _)) => tracing::warn!(user, got = %p.username, "server sent policy for wrong user"),
                     Err(e) => tracing::warn!(user, "policy fetch failed: {e:#}"),

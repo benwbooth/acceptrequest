@@ -330,9 +330,13 @@ mod tray {
             let small_font = CreateFontW(-13, 0, 0, 0, FW_NORMAL.0 as i32, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, 0, pcwstr(&face));
             let old = SelectObject(hdc, title_font.into());
             SetTextColor(hdc, COLORREF(0x00f4f4f4));
+            // The window is painted once at startup, before there's any warning to show, and
+            // DrawTextW reads through an empty slice's dangling pointer and crashes.
             let mut title = TOAST_TEXT.lock().unwrap().encode_utf16().collect::<Vec<u16>>();
-            let mut r = RECT { left: 20, top: 10, right: TOAST_W - 12, bottom: 42 };
-            DrawTextW(hdc, &mut title, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            if !title.is_empty() {
+                let mut r = RECT { left: 20, top: 10, right: TOAST_W - 12, bottom: 42 };
+                DrawTextW(hdc, &mut title, &mut r, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            }
             SelectObject(hdc, small_font.into());
             SetTextColor(hdc, COLORREF(0x00b9b4ae));
             let mut hint = "Click the hourglass icon to request more time".encode_utf16().collect::<Vec<u16>>();
@@ -396,6 +400,11 @@ mod tray {
     }
 
     pub fn main() -> Result<()> {
+        // There's no console, so leave a note where a parent can find it if this ever panics.
+        std::panic::set_hook(Box::new(|info| {
+            let path = std::env::temp_dir().join("screentime-tray-panic.txt");
+            let _ = std::fs::write(path, format!("{info}\n{}", std::backtrace::Backtrace::force_capture()));
+        }));
         let instance = unsafe { GetModuleHandleW(None) }?;
         let (tray_class, toast_class) = (wide("ScreenTimeTray"), wide("ScreenTimeToast"));
         register(&tray_class, tray_proc)?;
