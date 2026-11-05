@@ -106,6 +106,7 @@ label { font-weight: 600; font-size: 0.9rem; }
 .kid-head { display: flex; gap: 12px; align-items: center; }
 .avatar { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-weight: 700; flex: none; }
 .status { font-size: 1.15rem; font-weight: 650; }
+.status.big { font-size: 1.6rem; line-height: 1.2; }
 .status.ok { color: var(--ok); }
 .status.warn { color: var(--warn); }
 .status.off { color: var(--off); }

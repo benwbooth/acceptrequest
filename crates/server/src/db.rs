@@ -126,6 +126,19 @@ pub async fn bonus(db: &SqlitePool, user: i64, day: NaiveDate) -> Result<i64> {
         .await?)
 }
 
+/// The kid's time left today across every computer, before downtime: the day's limit plus time
+/// added anywhere, minus time used. Negative only if more was taken than was left; `None` means
+/// no daily limit.
+pub async fn time_left(db: &SqlitePool, user: i64, day: NaiveDate) -> Result<Option<i64>> {
+    let Some(limit) = allowances(db, user).await?[day.weekday().num_days_from_monday() as usize] else {
+        return Ok(None);
+    };
+    let hosts = usage(db, user, day).await?;
+    let used: i64 = hosts.iter().map(|u| u.active_minutes as i64).sum();
+    let at_computers: i64 = hosts.iter().map(|u| u.local_bonus_minutes as i64).sum();
+    Ok(Some(limit as i64 + bonus(db, user, day).await? + at_computers - used))
+}
+
 /// Add (positive) or take away (negative) time for the day.
 pub async fn add_bonus(db: &SqlitePool, user: i64, day: NaiveDate, minutes: i64, source: &str) -> Result<()> {
     sqlx::query("INSERT INTO bonus_grants (user_id, day, minutes, source, granted_at) VALUES (?, ?, ?, ?, ?)")

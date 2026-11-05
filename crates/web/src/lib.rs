@@ -485,7 +485,7 @@ fn RequestCard(r: RequestRow) -> impl IntoView {
 #[component]
 fn KidCard(u: UserOverview, today: chrono::NaiveDate) -> impl IntoView {
     let ctx = ctx();
-    let (headline, tone) = status(&u, today);
+    let (headline, _) = status(&u, today);
     let (username, shown) = (u.username.clone(), u.name.clone());
     let adjust = {
         let (username, shown) = (username.clone(), shown.clone());
@@ -494,7 +494,7 @@ fn KidCard(u: UserOverview, today: chrono::NaiveDate) -> impl IntoView {
             let done = if minutes > 0 {
                 format!("Added {minutes} minutes for {shown}")
             } else {
-                format!("Took {} minutes from {shown}", -minutes)
+                format!("Took time away from {shown}")
             };
             ctx.act(done, async move { api::add_bonus(&username, minutes).await })
         }
@@ -504,18 +504,26 @@ fn KidCard(u: UserOverview, today: chrono::NaiveDate) -> impl IntoView {
         Callback::new(move |m: u32| adjust(m as i64))
     };
     let take = Callback::new(move |m: u32| adjust(-(m as i64)));
-    let limit = u.allowances[today.format("%u").to_string().parse::<usize>().unwrap_or(1) - 1];
-    let local: u32 = u.usage_today.iter().map(|h| h.local_bonus_minutes).sum();
+    // One number: the time the kid has left today. What's stopping them, if anything, under it.
+    let left = match u.time_left {
+        Some(0) => "No time left".to_string(),
+        Some(m) => format!("{} left", fmt_minutes(m)),
+        None => "No daily limit".to_string(),
+    };
+    let left_tone = match u.time_left {
+        Some(0) => "off",
+        Some(m) if m <= 10 => "warn",
+        _ => "ok",
+    };
+    let blocked = match &u.decision {
+        Decision::Denied { reason: DenyReason::OutOfTime } => None,
+        Decision::Denied { .. } => Some(headline.clone()),
+        Decision::Allowed { .. } => None,
+    };
     let details = [
-        Some(format!("Used {}", fmt_minutes(u.used_today))),
-        Some(match limit {
-            Some(l) => format!("Limit {}", fmt_minutes(l)),
-            None => "No daily limit".into(),
-        }),
-        (u.bonus_today > 0).then(|| format!("+{} added", fmt_minutes(u.bonus_today as u32))),
-        (u.bonus_today < 0).then(|| format!("\u{2212}{} taken away", fmt_minutes((-u.bonus_today) as u32))),
-        (local > 0).then(|| format!("+{} added at the computer", fmt_minutes(local))),
+        blocked,
         (!u.locks.is_empty() && !u.locks.iter().any(|l| l == "*")).then(|| format!("Locked on {}", u.locks.join(", "))),
+        Some(format!("Used {} today", fmt_minutes(u.used_today))),
     ];
     let locked_all = u.locks.iter().any(|l| l == "*");
     let locked_on = u.locks.clone();
@@ -536,7 +544,7 @@ fn KidCard(u: UserOverview, today: chrono::NaiveDate) -> impl IntoView {
                 <span class="avatar">{u.name.chars().next().unwrap_or('?').to_uppercase().to_string()}</span>
                 <div>
                     <strong>{u.name.clone()}</strong>
-                    <div class=format!("status {tone}")>{headline}</div>
+                    <div class=format!("status big {left_tone}")>{left}</div>
                 </div>
             </div>
             <ul class="facts">{details.into_iter().flatten().map(|d| view! { <li>{d}</li> }).collect_view()}</ul>

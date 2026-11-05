@@ -17,6 +17,8 @@ pub struct HostUsage {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct UserOverview {
     pub username: String,
+    #[serde(default)]
+    pub time_left: Option<u32>,
     pub name: String,
     pub allowances: Allowances,
     pub downtime: Vec<DowntimeWindow>,

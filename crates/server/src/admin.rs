@@ -146,6 +146,8 @@ pub struct UserOverview {
     pub locks: Vec<String>,
     pub usage_today: Vec<HostUsage>,
     pub used_today: u32,
+    /// Time left today across all computers, never below zero; `None` with no daily limit.
+    pub time_left: Option<u32>,
     /// Where things stand across all machines, counting time a parent added at a computer.
     pub decision: Decision,
 }
@@ -164,6 +166,7 @@ async fn user_overview(s: &AppState, id: i64, username: String, today: NaiveDate
         locks: db::locks(&s.db, id).await?,
         usage_today,
         used_today,
+        time_left: db::time_left(&s.db, id, today).await?.map(|m| m.max(0) as u32),
         username,
     })
 }
@@ -261,8 +264,18 @@ async fn add_bonus(
         return Err(AppError::BadRequest("between 1 minute and 24 hours".into()));
     }
     let id = find_user(&s, &username).await?;
-    db::add_bonus(&s.db, id, Local::now().date_naive(), body.minutes, "web").await?;
-    tracing::info!(user = %username, minutes = body.minutes, "time adjusted from web");
+    let today = Local::now().date_naive();
+    // Time left never goes below zero: taking away more than is left takes it to zero, and
+    // time added afterwards counts in full.
+    let left = db::time_left(&s.db, id, today).await?.unwrap_or(i64::MAX);
+    if left < 0 {
+        db::add_bonus(&s.db, id, today, -left, "floor").await?;
+    }
+    let minutes = body.minutes.max(-left.max(0));
+    if minutes != 0 {
+        db::add_bonus(&s.db, id, today, minutes, "web").await?;
+    }
+    tracing::info!(user = %username, asked = body.minutes, minutes, "time adjusted from web");
     Ok(StatusCode::NO_CONTENT)
 }
 

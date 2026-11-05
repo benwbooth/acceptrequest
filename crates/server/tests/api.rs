@@ -650,3 +650,20 @@ async fn taking_time_away_comes_off_time_approved_at_the_computer() {
     let p2 = s.policy(&pc2, "kid").await;
     assert_eq!(p2.daily_allowance_minutes.unwrap() + p2.bonus_minutes, 0);
 }
+
+#[tokio::test]
+async fn time_left_stops_at_zero() {
+    let s = server(Config { default_allowance_minutes: 0, ..with_password() }).await;
+    let me = s.admin_cookie().await;
+    let today = Local::now().date_naive();
+    let uid = db::ensure_user(&s.state.db, "kid", 0).await.unwrap();
+    let adjust = |m: i64| s.call("POST", "/api/users/kid/bonus", Some(me.as_str()), Some(json!({ "minutes": m })));
+    adjust(30).await;
+    adjust(-120).await;
+    assert_eq!(db::time_left(&s.state.db, uid, today).await.unwrap(), Some(0));
+    // Time added after taking away "too much" counts in full.
+    adjust(15).await;
+    assert_eq!(db::time_left(&s.state.db, uid, today).await.unwrap(), Some(15));
+    let overview: Value = serde_json::from_str(&s.call("GET", "/api/overview", Some(me.as_str()), None).await.2).unwrap();
+    assert_eq!(overview["users"][0]["time_left"], 15);
+}
