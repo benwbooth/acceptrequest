@@ -536,6 +536,8 @@ async fn parent_pin_reaches_the_computers() {
     let hash = reply(s.call("POST", "/api/client/accounts", Some(&pc1), Some(report.clone())).await.2);
     assert!(auth::verify_password(hash.as_str().unwrap(), "4321"));
     assert!(!auth::verify_password(hash.as_str().unwrap(), "1234"));
+    let body: Value = serde_json::from_str(&s.call("POST", "/api/client/accounts", Some(&pc1), Some(report.clone())).await.2).unwrap();
+    assert!(auth::verify_password(body["admin_password_hash"].as_str().unwrap(), "correct horse"));
     assert_eq!(s.call("PUT", "/api/parent-pin", None, Some(json!({"pin": "9999"}))).await.0, StatusCode::UNAUTHORIZED);
     s.call("PUT", "/api/parent-pin", me, Some(json!({"pin": null}))).await;
     assert_eq!(reply(s.call("POST", "/api/client/accounts", Some(&pc1), Some(report)).await.2), Value::Null);

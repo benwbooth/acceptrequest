@@ -38,6 +38,9 @@ pub struct State {
     /// Hash of the parent PIN set in the web UI; "My parent is here" accepts it.
     #[serde(default)]
     pub parent_pin_hash: Option<String>,
+    /// Hash of the web UI's sign-in password, which "My parent is here" accepts too.
+    #[serde(default)]
+    pub admin_password_hash: Option<String>,
     /// The administrator who last approved time here, offered first next time.
     #[serde(default)]
     pub last_admin: Option<String>,

@@ -239,6 +239,7 @@ impl<P: Platform> Agent<P> {
         let mut state = self.state.lock().await;
         state.account_map = Some(new.mappings());
         state.parent_pin_hash = reply.parent_pin_hash;
+        state.admin_password_hash = reply.admin_password_hash;
     }
 
     /// Check sessions now instead of at the next regular tick.
@@ -586,12 +587,15 @@ impl<P: Platform> Agent<P> {
             failures.push(Instant::now());
         }
 
-        // The parent PIN from the web UI, or an administrator's own password. A limited account
-        // fails exactly like a wrong password.
-        let pin_hash = self.state.lock().await.parent_pin_hash.clone();
+        // The parent PIN or sign-in password from the web UI, or an administrator's own
+        // password. A limited account fails exactly like a wrong password.
+        let hashes: Vec<String> = {
+            let state = self.state.lock().await;
+            state.parent_pin_hash.iter().chain(&state.admin_password_hash).cloned().collect()
+        };
         let verified = !self.is_managed(&admin)
             && tokio::task::block_in_place(|| {
-                pin_hash.as_deref().is_some_and(|h| pin_matches(h, &password))
+                hashes.iter().any(|h| pin_matches(h, &password))
                     || self
                         .platform
                         .verify_admin(&admin, &password)
@@ -699,7 +703,9 @@ mod tests {
         let a = agent(dir.path(), Duration::from_secs(120));
         let salt = SaltString::encode_b64(b"0123456789abcdef").unwrap();
         let hash = argon2::Argon2::default().hash_password(b"4321", &salt).unwrap().to_string();
+        let web = argon2::Argon2::default().hash_password(b"web password", &salt).unwrap().to_string();
         a.state.lock().await.parent_pin_hash = Some(hash);
+        a.state.lock().await.admin_password_hash = Some(web);
         let grant = |pw: &str| SocketRequest::ParentGrant {
             username: "kid".into(),
             minutes: 15,
@@ -707,6 +713,7 @@ mod tests {
             password: pw.into(),
         };
         assert_eq!(a.answer(grant("4321")).await, SocketResponse::Granted { minutes: 15 });
+        assert_eq!(a.answer(grant("web password")).await, SocketResponse::Granted { minutes: 15 });
         assert!(matches!(a.answer(grant("1234")).await, SocketResponse::Error { .. }));
     }
 

@@ -940,7 +940,7 @@ fn ParentPin() -> impl IntoView {
         });
     };
     let remove = move |_: leptos::ev::MouseEvent| {
-        if confirm_action("Remove the parent PIN? Approving at a computer will need a parent's Windows password.") {
+        if confirm_action("Remove the parent PIN? Approving at a computer will need this site's password or a parent's Windows password.") {
             spawn_local(async move {
                 match api::set_parent_pin(None).await {
                     Ok(()) => {
@@ -963,7 +963,7 @@ fn ParentPin() -> impl IntoView {
         <form class="card form" on:submit=save>
             <h3>"Parent PIN"</h3>
             <p class="muted small">
-                "Type this at a computer for \u{201c}My parent is here\u{201d} instead of your full password. "
+                "Type this at a computer for \u{201c}My parent is here\u{201d}. This site's sign-in password works there too. "
                 {move || match is_set.get() {
                     Some(true) => "A PIN is set.",
                     Some(false) => "No PIN is set yet.",

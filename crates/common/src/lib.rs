@@ -224,6 +224,9 @@ pub struct AccountsReply {
     /// Argon2 hash of the parent PIN set in the web UI, accepted by "My parent is here".
     #[serde(default)]
     pub parent_pin_hash: Option<String>,
+    /// Argon2 hash of the web UI's own sign-in password, also accepted by "My parent is here".
+    #[serde(default)]
+    pub admin_password_hash: Option<String>,
 }
 
 /// Usage report a client sends to the server.
