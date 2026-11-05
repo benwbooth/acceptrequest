@@ -421,12 +421,42 @@ fn tray_running_in(session_id: u32) -> bool {
 }
 
 /// Start the tray app as the session's user, next to this executable.
+/// The tray app runs as the kid (so it sees their desktop, taskbar and settings) but they may only
+/// look at it: no ending, suspending or debugging it from Task Manager. OW stops the owner's
+/// implicit right to rewrite this list.
+const TRAY_SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101000;;;OW)";
+
 fn start_in_session(session_id: u32) -> Result<()> {
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
+    use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
     let exe = std::env::current_exe()?.with_file_name(TRAY_EXE);
     let mut cmd = wide(&format!("\"{}\"", exe.display()));
     let mut desktop = wide(r"winsta0\default");
-    let mut token = HANDLE::default();
+    let sddl = wide(TRAY_SDDL);
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(pcwstr(&sddl), SDDL_REVISION_1, &mut descriptor, None) }
+        .context("tray security descriptor")?;
+    let attrs = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: false.into(),
+    };
+    let result = unsafe { start_with(session_id, &mut cmd, &mut desktop, &attrs) };
     unsafe {
+        let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+    }
+    result
+}
+
+unsafe fn start_with(
+    session_id: u32,
+    cmd: &mut [u16],
+    desktop: &mut [u16],
+    attrs: &windows::Win32::Security::SECURITY_ATTRIBUTES,
+) -> Result<()> {
+    unsafe {
+        let mut token = HANDLE::default();
         WTSQueryUserToken(session_id, &mut token).context("WTSQueryUserToken")?;
         let mut env: *mut core::ffi::c_void = std::ptr::null_mut();
         let env_ok = CreateEnvironmentBlock(&mut env, Some(token), false).is_ok();
@@ -440,8 +470,8 @@ fn start_in_session(session_id: u32) -> Result<()> {
             Some(token),
             windows::core::PCWSTR::null(),
             Some(PWSTR(cmd.as_mut_ptr())),
-            None,
-            None,
+            Some(attrs),
+            Some(attrs),
             false,
             CREATE_UNICODE_ENVIRONMENT,
             env_ok.then_some(env as *const _),
