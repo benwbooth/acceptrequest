@@ -42,7 +42,9 @@ use windows::core::{PCWSTR, PWSTR};
 const UNITS_PER_WEEK: u32 = 168;
 const TRAY_EXE: &str = "screentime-tray.exe";
 /// Don't try to start the tray in a session more often than this.
-const TRAY_RETRY: Duration = Duration::from_secs(60);
+/// How soon the tray app is started again after it's closed (it runs as the kid, who can end it
+/// in Task Manager).
+const TRAY_RETRY: Duration = Duration::from_secs(15);
 
 pub struct Windows {
     /// Mirror the schedule into Windows logon hours (on unless SCREENTIME_LOGON_HOURS=off).

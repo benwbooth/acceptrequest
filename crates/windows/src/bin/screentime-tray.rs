@@ -24,6 +24,10 @@ mod tray {
     };
     use windows::Win32::System::Com::CoTaskMemFree;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_DWORD, REG_VALUE_TYPE, RegCloseKey, RegEnumKeyExW,
+        RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    };
     use windows::Win32::UI::Shell::{
         NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_WARNING, NIM_ADD, NIM_MODIFY, NOTIFYICONDATAW,
         Shell_NotifyIconW,
@@ -31,7 +35,7 @@ mod tray {
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW, GetCursorPos,
         GetMessageW, HWND_TOPMOST, IDI_APPLICATION, KillTimer, LoadIconW, MF_GRAYED, MF_POPUP, MF_SEPARATOR,
-        MF_STRING, MSG, PostMessageW, RegisterClassW, SPI_GETWORKAREA, SW_HIDE, SW_SHOWNOACTIVATE,
+        MF_STRING, MSG, PostMessageW, RegisterClassW, RegisterWindowMessageW, SPI_GETWORKAREA, SW_HIDE, SW_SHOWNOACTIVATE,
         SWP_NOACTIVATE, SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowPos, ShowWindow,
         SystemParametersInfoW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, TPM_RETURNCMD, TPM_RIGHTBUTTON,
         TrackPopupMenu, TranslateMessage, WM_APP, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
@@ -54,6 +58,8 @@ mod tray {
     static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
     static TOAST_HWND: AtomicIsize = AtomicIsize::new(0);
     static STATUS: Mutex<String> = Mutex::new(String::new());
+    /// Explorer's "the taskbar was recreated" message, to put the icon back after Explorer restarts.
+    static TASKBAR_CREATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     static TOAST_TEXT: Mutex<String> = Mutex::new(String::new());
 
     fn username() -> String {
@@ -70,6 +76,71 @@ mod tray {
         let mut reply = String::new();
         BufReader::new(pipe).read_line(&mut reply)?;
         Ok(serde_json::from_str(&reply)?)
+    }
+
+    /// Remember the status for the menu and show it as the icon's hover text.
+    fn set_status(text: String) {
+        let hwnd = HWND(TRAY_HWND.load(Ordering::Relaxed) as _);
+        let mut data = icon_data(hwnd);
+        data.uFlags = NIF_TIP;
+        copy_into(&mut data.szTip, if text.is_empty() { "Screen time" } else { &text });
+        *STATUS.lock().unwrap() = text;
+        if !hwnd.is_invalid() {
+            unsafe {
+                let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
+            }
+        }
+    }
+
+    /// Keep the remaining time current, and the icon pinned to the taskbar rather than tucked away
+    /// in the hidden-icons menu (Windows 11 keeps that choice per user, so a kid could hide it).
+    fn keep_status_and_icon_fresh() {
+        loop {
+            if let Ok(response) = ask(&SocketRequest::Status { username: username() }) {
+                let text = status_text(&response);
+                if !text.is_empty() {
+                    set_status(text);
+                }
+            }
+            promote_icon();
+            std::thread::sleep(Duration::from_secs(30));
+        }
+    }
+
+    /// Set IsPromoted on this app's entry under HKCU\Control Panel\NotifyIconSettings.
+    fn promote_icon() {
+        let Ok(exe) = std::env::current_exe() else { return };
+        let exe = exe.to_string_lossy().to_lowercase();
+        let root = wide(r"Control Panel\NotifyIconSettings");
+        let mut key = HKEY::default();
+        unsafe {
+            if RegOpenKeyExW(HKEY_CURRENT_USER, pcwstr(&root), None, KEY_READ, &mut key).is_err() {
+                return;
+            }
+            for i in 0.. {
+                let mut name = [0u16; 64];
+                let mut len = name.len() as u32;
+                if RegEnumKeyExW(key, i, Some(PWSTR(name.as_mut_ptr())), &mut len, None, None, None, None).is_err() {
+                    break;
+                }
+                let mut sub = HKEY::default();
+                if RegOpenKeyExW(key, PCWSTR(name.as_ptr()), None, KEY_READ | KEY_SET_VALUE, &mut sub).is_err() {
+                    continue;
+                }
+                let mut path = [0u16; 520];
+                let mut size = (path.len() * 2) as u32;
+                let mut kind = REG_VALUE_TYPE::default();
+                let value = wide("ExecutablePath");
+                let found = RegQueryValueExW(sub, pcwstr(&value), None, Some(&mut kind), Some(path.as_mut_ptr() as *mut u8), Some(&mut size)).is_ok()
+                    && from_wide(&path).to_lowercase() == exe;
+                if found {
+                    let promoted = wide("IsPromoted");
+                    let _ = RegSetValueExW(sub, pcwstr(&promoted), None, REG_DWORD, Some(&1u32.to_le_bytes()));
+                }
+                let _ = RegCloseKey(sub);
+            }
+            let _ = RegCloseKey(key);
+        }
     }
 
     fn fmt_minutes(m: u32) -> String {
@@ -106,7 +177,7 @@ mod tray {
                 line.push(b'\n');
                 pipe.write_all(&line)?;
                 let warn = |minutes: u32| {
-                    *STATUS.lock().unwrap() = format!("{} of screen time left", fmt_minutes(minutes));
+                    set_status(format!("{} of screen time left", fmt_minutes(minutes)));
                     let hwnd = HWND(TRAY_HWND.load(Ordering::Relaxed) as _);
                     unsafe {
                         let _ = PostMessageW(Some(hwnd), WM_WARNING, WPARAM(minutes as usize), LPARAM(0));
@@ -122,13 +193,13 @@ mod tray {
                         {
                             warn(m)
                         }
-                        other => *STATUS.lock().unwrap() = status_text(&other),
+                        other => set_status(status_text(&other)),
                     }
                 }
                 Ok(())
             })();
             if let Err(e) = result {
-                *STATUS.lock().unwrap() = format!("Screen time service unavailable ({e})");
+                set_status(format!("Screen time service unavailable ({e})"));
             }
             std::thread::sleep(Duration::from_secs(5));
         }
@@ -364,7 +435,27 @@ mod tray {
                 show_toast(wparam.0 as u32);
                 LRESULT(0)
             }
+            m if m != 0 && m == TASKBAR_CREATED.load(Ordering::Relaxed) => {
+                add_icon(hwnd);
+                LRESULT(0)
+            }
             _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        }
+    }
+
+    fn add_icon(hwnd: HWND) {
+        let instance = unsafe { GetModuleHandleW(None) }.unwrap_or_default();
+        let mut data = icon_data(hwnd);
+        data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        data.uCallbackMessage = WM_TRAY;
+        // The hourglass embedded as resource 1, falling back to the generic application icon.
+        data.hIcon = unsafe { LoadIconW(Some(instance.into()), windows::core::PCWSTR(1 as _)) }
+            .or_else(|_| unsafe { LoadIconW(None, IDI_APPLICATION) })
+            .unwrap_or_default();
+        let status = STATUS.lock().unwrap().clone();
+        copy_into(&mut data.szTip, if status.is_empty() { "Screen time" } else { &status });
+        unsafe {
+            let _ = Shell_NotifyIconW(NIM_ADD, &data);
         }
     }
 
@@ -426,25 +517,18 @@ mod tray {
         TRAY_HWND.store(tray.0 as isize, Ordering::Relaxed);
         TOAST_HWND.store(toast.0 as isize, Ordering::Relaxed);
 
-        let mut data = icon_data(tray);
-        data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-        data.uCallbackMessage = WM_TRAY;
-        // The hourglass embedded as resource 1, falling back to the generic application icon.
-        data.hIcon = unsafe { LoadIconW(Some(instance.into()), windows::core::PCWSTR(1 as _)) }
-            .or_else(|_| unsafe { LoadIconW(None, IDI_APPLICATION) })?;
-        copy_into(&mut data.szTip, "Screen time");
-        unsafe {
-            let _ = Shell_NotifyIconW(NIM_ADD, &data);
-        }
-
+        let created = wide("TaskbarCreated");
+        TASKBAR_CREATED.store(unsafe { RegisterWindowMessageW(pcwstr(&created)) }, Ordering::Relaxed);
         if let Ok(response) = ask(&SocketRequest::Status { username: username() }) {
             *STATUS.lock().unwrap() = status_text(&response);
         }
+        add_icon(tray);
         // `--preview` shows what a warning looks like, for parents setting this up.
         if std::env::args().any(|a| a == "--preview") {
             show_toast(10);
         }
         std::thread::spawn(follow_warnings);
+        std::thread::spawn(keep_status_and_icon_fresh);
 
         let mut msg = MSG::default();
         while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
