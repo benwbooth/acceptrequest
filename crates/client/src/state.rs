@@ -1,7 +1,7 @@
 //! Persistent daemon state: cached policies, today's usage and unsent time requests.
 
 use screentime_common::{Decision, Policy, TimeRequest, apply_override, evaluate};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{Duration, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
