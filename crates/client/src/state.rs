@@ -52,19 +52,41 @@ impl State {
 
     /// Load saved state. A missing file is a fresh install; a corrupt one is an error
     /// rather than silently resetting today's usage to zero.
+    /// The saved state, or the previous save if the latest is damaged (a computer switched off
+    /// at the wrong moment), or a fresh start. Never an error: refusing to start would leave the
+    /// computer with no limits at all.
     pub fn load(state_dir: &Path) -> Result<State> {
         let path = Self::path(state_dir);
-        match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).with_context(|| format!("parsing {}", path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(State::default()),
-            Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
+        let backup = path.with_extension("json.bak");
+        for candidate in [&path, &backup] {
+            match std::fs::read(candidate) {
+                Ok(bytes) => match serde_json::from_slice(&bytes) {
+                    Ok(state) => return Ok(state),
+                    Err(e) => {
+                        tracing::error!("{} is damaged ({e}); setting it aside", candidate.display());
+                        let _ = std::fs::rename(candidate, candidate.with_extension("damaged"));
+                    }
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => tracing::error!("reading {}: {e}", candidate.display()),
+            }
         }
+        Ok(State::default())
     }
 
     pub fn save(&self, state_dir: &Path) -> Result<()> {
+        use std::io::Write;
         let path = Self::path(state_dir);
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        {
+            // On disk before the rename, so a power cut can't leave an empty file behind.
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(&serde_json::to_vec_pretty(self)?)?;
+            f.sync_all()?;
+        }
+        if path.exists() {
+            let _ = std::fs::copy(&path, path.with_extension("json.bak"));
+        }
         std::fs::rename(&tmp, &path)?;
         Ok(())
     }
@@ -140,6 +162,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_damaged_save_falls_back_instead_of_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = State::default();
+        s.last_admin = Some("dad".into());
+        s.save(dir.path()).unwrap();
+        s.save(dir.path()).unwrap(); // leaves a backup
+        std::fs::write(State::path(dir.path()), [0u8; 64]).unwrap();
+        assert_eq!(State::load(dir.path()).unwrap().last_admin.as_deref(), Some("dad"));
+        std::fs::write(State::path(dir.path()).with_extension("json.bak"), "").unwrap();
+        std::fs::write(State::path(dir.path()), "").unwrap();
+        assert!(State::load(dir.path()).unwrap().last_admin.is_none());
+    }
+
+    #[test]
     fn usage_resets_each_day_and_survives_reload() {
         let dir = tempfile::tempdir().unwrap();
         let mon = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
@@ -176,12 +212,5 @@ mod tests {
             s.add_minute("kid", now.date());
         }
         assert!(matches!(s.decide("kid", later).0, Decision::Denied { .. }));
-    }
-
-    #[test]
-    fn corrupt_state_is_an_error() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(State::path(dir.path()), b"{not json").unwrap();
-        assert!(State::load(dir.path()).is_err());
     }
 }
